@@ -18,5 +18,7 @@ eframe = { workspace = true }
 windows-sys = { version = "0.60", features = ["Win32_System_Console"] }
 
 # 图标/版本信息资源嵌入（GNU 工具链走 windres）
-[target.'cfg(windows)'.build-dependencies]
+# 注：必须是无条件 build-dependency——build.rs 的引用是编译期的，
+# 若仅限 windows 目标会在非 Windows 平台解析失败（由运行期 if 决定是否执行）。
+[build-dependencies]
 winresource = "0.1"
