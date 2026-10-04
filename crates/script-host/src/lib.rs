@@ -26,10 +26,10 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use boa_engine::property::Attribute;
 use boa_engine::{
     js_string, Context, JsArgs, JsObject, JsResult, JsString, JsValue, NativeFunction, Source,
 };
-use boa_engine::property::Attribute;
 
 /// API 版本，供“脚本”菜单展示。
 pub const API_VERSION: &str = "0.1";
@@ -59,8 +59,7 @@ thread_local! {
 }
 
 fn state() -> Rc<RefCell<ScriptApi>> {
-    CURRENT_API
-        .with(|c| c.borrow().as_ref().expect("script api state").clone())
+    CURRENT_API.with(|c| c.borrow().as_ref().expect("script api state").clone())
 }
 
 fn cote_text(_this: &JsValue, _args: &[JsValue], _ctx: &mut Context) -> JsResult<JsValue> {
@@ -69,13 +68,19 @@ fn cote_text(_this: &JsValue, _args: &[JsValue], _ctx: &mut Context) -> JsResult
 }
 
 fn cote_set_text(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
-    let s = args.get_or_undefined(0).to_string(ctx)?.to_std_string_escaped();
+    let s = args
+        .get_or_undefined(0)
+        .to_string(ctx)?
+        .to_std_string_escaped();
     state().borrow_mut().text = s;
     Ok(JsValue::undefined())
 }
 
 fn cote_status(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
-    let s = args.get_or_undefined(0).to_string(ctx)?.to_std_string_escaped();
+    let s = args
+        .get_or_undefined(0)
+        .to_string(ctx)?
+        .to_std_string_escaped();
     state().borrow_mut().status = Some(s);
     Ok(JsValue::undefined())
 }
@@ -111,7 +116,9 @@ pub fn run_script_with_limit(
 ) -> Result<ScriptApi, String> {
     let holder = Rc::new(RefCell::new(api.clone()));
     let mut context = Context::default();
-    context.runtime_limits_mut().set_loop_iteration_limit(loop_limit);
+    context
+        .runtime_limits_mut()
+        .set_loop_iteration_limit(loop_limit);
     CURRENT_API.with(|c| *c.borrow_mut() = Some(holder.clone()));
 
     // 挂载全局 cote 对象（text/setText/status/selection/setSelection）
@@ -137,9 +144,7 @@ pub fn run_script_with_limit(
         return Err(e.to_string());
     }
 
-    let outcome = context
-        .eval(Source::from_bytes(source))
-        .map(|_| ());
+    let outcome = context.eval(Source::from_bytes(source)).map(|_| ());
 
     match outcome {
         Ok(()) => {
@@ -157,7 +162,9 @@ pub fn run_script_with_limit(
 /// 加载脚本目录下全部 `*.js`（按文件名排序，菜单顺序稳定；文件名即脚本名）。
 pub fn load_scripts(dir: &Path) -> Vec<ScriptInfo> {
     let mut out = vec![];
-    let Ok(rd) = std::fs::read_dir(dir) else { return out };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return out;
+    };
     let mut paths: Vec<_> = rd.flatten().map(|e| e.path()).collect();
     paths.sort();
     for p in paths {
@@ -168,7 +175,11 @@ pub fn load_scripts(dir: &Path) -> Vec<ScriptInfo> {
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 if !name.is_empty() {
-                    out.push(ScriptInfo { name, path: p, source });
+                    out.push(ScriptInfo {
+                        name,
+                        path: p,
+                        source,
+                    });
                 }
             }
         }
@@ -182,7 +193,10 @@ mod tests {
 
     #[test]
     fn text_transform_roundtrip() {
-        let api = ScriptApi { text: "hello 中文".to_string(), ..Default::default() };
+        let api = ScriptApi {
+            text: "hello 中文".to_string(),
+            ..Default::default()
+        };
         let out = run_script(
             "cote.setText(cote.text().toUpperCase()); cote.status('done');",
             &api,
@@ -195,7 +209,11 @@ mod tests {
 
     #[test]
     fn selection_roundtrip() {
-        let api = ScriptApi { text: "abc".to_string(), selection: Some((5, 5)), ..Default::default() };
+        let api = ScriptApi {
+            text: "abc".to_string(),
+            selection: Some((5, 5)),
+            ..Default::default()
+        };
         let out = run_script(
             "const s = cote.selection(); if (s.start !== 5) throw new Error('bad start'); \
              cote.setSelection(0, 3);",
@@ -207,13 +225,20 @@ mod tests {
 
     #[test]
     fn selection_undefined_when_absent() {
-        let out = run_script("if (cote.selection() !== undefined) throw new Error('x');", &ScriptApi::default()).unwrap();
+        let out = run_script(
+            "if (cote.selection() !== undefined) throw new Error('x');",
+            &ScriptApi::default(),
+        )
+        .unwrap();
         assert_eq!(out.selection, None);
     }
 
     #[test]
     fn script_error_is_isolated() {
-        let api = ScriptApi { text: "unchanged".to_string(), ..Default::default() };
+        let api = ScriptApi {
+            text: "unchanged".to_string(),
+            ..Default::default()
+        };
         // 运行时异常
         let err = run_script("throw new Error('boom');", &api).unwrap_err();
         assert!(err.contains("boom"));
@@ -249,7 +274,11 @@ mod tests {
     fn load_scripts_from_dir() {
         let dir = std::env::temp_dir().join("cote-script-test");
         let _ = std::fs::create_dir_all(&dir);
-        std::fs::write(dir.join("b_upper.js"), "cote.setText(cote.text().toUpperCase())").unwrap();
+        std::fs::write(
+            dir.join("b_upper.js"),
+            "cote.setText(cote.text().toUpperCase())",
+        )
+        .unwrap();
         std::fs::write(dir.join("a_info.js"), "cote.status('info')").unwrap();
         std::fs::write(dir.join("ignore.txt"), "not a script").unwrap();
         let scripts = load_scripts(&dir);

@@ -4,5 +4,8 @@
 *.cote-tmp
 installer/*.exe
 dist/
-"lib.rs
-pelican-bike.html"  
+node_modules/
+lib.rs
+pelican-bike.html
+pelican-bicycle.svg
+pelican-preview.png

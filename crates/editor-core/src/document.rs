@@ -19,11 +19,22 @@ use crate::undo::{Edit, EditGroup};
 enum OpenGroup {
     Idle,
     /// 连续追加输入：`text` 是本次 run 累计插入的内容
-    Typing { start: usize, text: String, cursor_before: usize },
+    Typing {
+        start: usize,
+        text: String,
+        cursor_before: usize,
+    },
     /// 连续退格：`removed` 是累计删除的内容（按时间顺序，最早删的在前）
-    Backspacing { start: usize, removed: String, cursor_before: usize },
+    Backspacing {
+        start: usize,
+        removed: String,
+        cursor_before: usize,
+    },
     /// 显式分组
-    Explicit { edits: Vec<Edit>, cursor_before: usize },
+    Explicit {
+        edits: Vec<Edit>,
+        cursor_before: usize,
+    },
 }
 
 #[derive(Debug)]
@@ -87,7 +98,9 @@ impl Document {
         self.buffer = Buffer::from_text(text);
         self.encoding = encoding.to_string();
         self.had_bom = had_bom;
-        self.newline = newline::analyze(text).dominant().unwrap_or_else(LineEnding::platform_default);
+        self.newline = newline::analyze(text)
+            .dominant()
+            .unwrap_or_else(LineEnding::platform_default);
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.open = OpenGroup::Idle;
@@ -198,7 +211,11 @@ impl Document {
             _ => {
                 self.finalize();
                 self.redo_stack.clear();
-                self.open = OpenGroup::Typing { start: pos, text: s.to_string(), cursor_before: pos };
+                self.open = OpenGroup::Typing {
+                    start: pos,
+                    text: s.to_string(),
+                    cursor_before: pos,
+                };
             }
         }
         self.buffer.insert(pos, s);
@@ -223,14 +240,22 @@ impl Document {
                     cursor_after: start,
                 });
             }
-            OpenGroup::Backspacing { start: s0, removed: r, .. } if end == *s0 => {
+            OpenGroup::Backspacing {
+                start: s0,
+                removed: r,
+                ..
+            } if end == *s0 => {
                 *s0 = start;
                 r.insert_str(0, &removed);
             }
             _ => {
                 self.finalize();
                 self.redo_stack.clear();
-                self.open = OpenGroup::Backspacing { start, removed, cursor_before: end };
+                self.open = OpenGroup::Backspacing {
+                    start,
+                    removed,
+                    cursor_before: end,
+                };
             }
         }
         self.buffer.remove(start, end);
@@ -241,7 +266,10 @@ impl Document {
     pub fn begin_group(&mut self) {
         self.finalize();
         self.redo_stack.clear();
-        self.open = OpenGroup::Explicit { edits: vec![], cursor_before: 0 };
+        self.open = OpenGroup::Explicit {
+            edits: vec![],
+            cursor_before: 0,
+        };
     }
 
     /// 显式撤销分组结束。
@@ -294,9 +322,44 @@ impl Document {
         Some(cursor)
     }
 
+    /// 撤销一步，并返回本组编辑与撤销后光标位置（字符索引）。
+    /// 编辑按**撤销应用顺序**（逆时间序）返回；每条 `Edit` 的 `start`
+    /// 是「该条编辑作用时刻」的坐标——从撤销前的文本出发逆序逐条把
+    /// `[start, start+插入数)` 替换为 `removed` 即可逐步回退。
+    /// 增量 UI 据此把撤销同步给编辑器视图，无需整篇传输。
+    pub fn undo_with_ops(&mut self) -> Option<(Vec<Edit>, usize)> {
+        self.finalize();
+        let group = self.undo_stack.pop()?;
+        let cursor = group.cursor_before().unwrap_or(0);
+        let ops: Vec<Edit> = group.edits().iter().rev().cloned().collect();
+        for e in &ops {
+            self.transform(e, false);
+        }
+        self.redo_stack.push(group);
+        Some((ops, cursor))
+    }
+
+    /// 重做一步，并返回本组编辑（正时间序）与重做后光标位置（字符索引）。
+    /// 从重做前的文本出发正序逐条把 `[start, start+删除数)` 替换为 `inserted`。
+    pub fn redo_with_ops(&mut self) -> Option<(Vec<Edit>, usize)> {
+        self.finalize();
+        let group = self.redo_stack.pop()?;
+        let cursor = group.cursor_after().unwrap_or(0);
+        let ops: Vec<Edit> = group.edits().to_vec();
+        for e in &ops {
+            self.transform(e, true);
+        }
+        self.undo_stack.push(group);
+        Some((ops, cursor))
+    }
+
     /// 把编辑作用到缓冲。redo=true 顺向应用，false 逆向回退。
     fn transform(&mut self, e: &Edit, redo: bool) {
-        let (take, put) = if redo { (&e.removed, &e.inserted) } else { (&e.inserted, &e.removed) };
+        let (take, put) = if redo {
+            (&e.removed, &e.inserted)
+        } else {
+            (&e.inserted, &e.removed)
+        };
         let take_len = take.chars().count();
         if take_len > 0 {
             self.buffer.remove(e.start, e.start + take_len);
@@ -317,7 +380,11 @@ impl Document {
     fn finalize(&mut self) {
         let taken = std::mem::replace(&mut self.open, OpenGroup::Idle);
         match taken {
-            OpenGroup::Typing { start, text, cursor_before } => {
+            OpenGroup::Typing {
+                start,
+                text,
+                cursor_before,
+            } => {
                 if !text.is_empty() {
                     let after = start + text.chars().count();
                     self.push_group(EditGroup::One(Edit {
@@ -329,7 +396,11 @@ impl Document {
                     }));
                 }
             }
-            OpenGroup::Backspacing { start, removed, cursor_before } => {
+            OpenGroup::Backspacing {
+                start,
+                removed,
+                cursor_before,
+            } => {
                 if !removed.is_empty() {
                     self.push_group(EditGroup::One(Edit {
                         start,
@@ -340,7 +411,10 @@ impl Document {
                     }));
                 }
             }
-            OpenGroup::Explicit { edits, cursor_before } => {
+            OpenGroup::Explicit {
+                edits,
+                cursor_before,
+            } => {
                 if !edits.is_empty() {
                     let _ = cursor_before;
                     self.push_group(EditGroup::Many(edits));
@@ -490,6 +564,45 @@ mod tests {
     }
 
     #[test]
+    fn undo_ops_replay_reconstructs_text() {
+        // 多条编辑的显式分组：逆序回放 ops 应从撤销后文本重建撤销前文本
+        let mut d = doc("hello");
+        d.begin_group();
+        d.insert_text(5, " world");
+        d.delete_range(0, 1); // 删 h
+        d.end_group();
+        let before = d.text();
+        let (ops, _cursor) = d.undo_with_ops().unwrap();
+        let mut replayed = before.clone();
+        for e in &ops {
+            let start_byte = byte_of(&replayed, e.start);
+            let end_byte = byte_of(&replayed, e.start + e.chars_inserted());
+            replayed.replace_range(start_byte..end_byte, &e.removed);
+        }
+        assert_eq!(replayed, "hello");
+        assert_eq!(d.text(), "hello");
+
+        // 重做同理：正序回放
+        let before_redo = d.text();
+        let (ops, _cursor) = d.redo_with_ops().unwrap();
+        let mut replayed = before_redo;
+        for e in &ops {
+            let start_byte = byte_of(&replayed, e.start);
+            let end_byte = byte_of(&replayed, e.start + e.chars_removed());
+            replayed.replace_range(start_byte..end_byte, &e.inserted);
+        }
+        assert_eq!(replayed, "ello world");
+        assert_eq!(d.text(), "ello world");
+    }
+
+    fn byte_of(s: &str, char_idx: usize) -> usize {
+        s.char_indices()
+            .nth(char_idx)
+            .map(|(b, _)| b)
+            .unwrap_or(s.len())
+    }
+
+    #[test]
     fn line_col() {
         let d = doc("ab\n中文\ncd");
         assert_eq!(d.line_col(0), (1, 1));
@@ -522,7 +635,7 @@ mod tests {
         assert_eq!(out.bytes, [0xD6, 0xD0, 0xCE, 0xC4]);
         let d2 = Document::from_bytes(&out.bytes);
         assert_eq!(d2.text(), "中文");
-        assert_eq!(d2.encoding_name(), "GBK" );
+        assert_eq!(d2.encoding_name(), "GBK");
         // 不可表示字符（GBK 无法编码 emoji）
         d.insert_text(2, "🙂");
         assert_eq!(d.unmappable_chars().len(), 1);

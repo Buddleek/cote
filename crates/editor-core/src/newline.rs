@@ -51,7 +51,11 @@ impl NewlineInfo {
 
     /// 是否混合换行（状态栏提示，FR-2.5）。
     pub fn mixed(&self) -> bool {
-        [self.lf, self.crlf, self.cr].iter().filter(|&&c| c > 0).count() > 1
+        [self.lf, self.crlf, self.cr]
+            .iter()
+            .filter(|&&c| c > 0)
+            .count()
+            > 1
     }
 
     /// 数量最多的换行符；无换行时返回 None。
@@ -135,8 +139,14 @@ mod tests {
 
     #[test]
     fn convert_all_forms() {
-        assert_eq!(super::convert_all("a\r\nb\rc\nd", LineEnding::Lf), "a\nb\nc\nd");
-        assert_eq!(super::convert_all("a\nb\nc\nd", LineEnding::Crlf), "a\r\nb\r\nc\r\nd");
+        assert_eq!(
+            super::convert_all("a\r\nb\rc\nd", LineEnding::Lf),
+            "a\nb\nc\nd"
+        );
+        assert_eq!(
+            super::convert_all("a\nb\nc\nd", LineEnding::Crlf),
+            "a\r\nb\r\nc\r\nd"
+        );
         assert_eq!(super::convert_all("a\r\nb", LineEnding::Cr), "a\rb");
         assert_eq!(super::convert_all("", LineEnding::Lf), "");
     }

@@ -230,7 +230,11 @@ pub fn sort_lines(s: &str, ascending: bool, numeric: bool, case_insensitive: boo
     let mut lines = split_lines_keep(s);
     let key = |l: &&str| -> (bool, f64, String) {
         let c = line_content(l).trim();
-        let folded = if case_insensitive { c.to_lowercase() } else { c.to_string() };
+        let folded = if case_insensitive {
+            c.to_lowercase()
+        } else {
+            c.to_string()
+        };
         if numeric {
             // 直接 parse（Rust 接受 "+3"/"-3"）；不能剥符号再解析，否则负数变正数
             let num = c.parse::<f64>().ok();
@@ -243,7 +247,9 @@ pub fn sort_lines(s: &str, ascending: bool, numeric: bool, case_insensitive: boo
         }
     };
     let cmp = |a: &&str, b: &&str| {
-        key(a).partial_cmp(&key(b)).unwrap_or(std::cmp::Ordering::Equal)
+        key(a)
+            .partial_cmp(&key(b))
+            .unwrap_or(std::cmp::Ordering::Equal)
     };
     lines.sort_by(cmp);
     if !ascending {
@@ -388,8 +394,10 @@ pub fn word_completions(text: &str, prefix: &str, limit: usize) -> Vec<String> {
     if !cur.is_empty() {
         words.insert(cur);
     }
-    let mut v: Vec<String> =
-        words.into_iter().filter(|w| w.starts_with(prefix) && w != prefix).collect();
+    let mut v: Vec<String> = words
+        .into_iter()
+        .filter(|w| w.starts_with(prefix) && w != prefix)
+        .collect();
     v.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
     v.truncate(limit);
     v
@@ -419,7 +427,11 @@ fn is_cjk_word_char(c: char) -> bool {
 /// 统计：字符数（码点）、字节数、行数、词数。
 /// 词数 = 连续字母数字串 + 每个中日韩字符单独计 1。
 pub fn stats(s: &str) -> TextStats {
-    let mut st = TextStats { bytes: s.len(), chars: s.chars().count(), ..Default::default() };
+    let mut st = TextStats {
+        bytes: s.len(),
+        chars: s.chars().count(),
+        ..Default::default()
+    };
     if !s.is_empty() {
         st.lines = 1 + newline_count(s);
     }
@@ -461,7 +473,10 @@ mod tests {
     fn case_transforms() {
         assert_eq!(to_upper("abc déf"), "ABC DÉF");
         assert_eq!(to_title_case("hello world foo"), "Hello World Foo");
-        assert_eq!(to_sentence_case("hello. world! again? yes"), "Hello. World! Again? Yes");
+        assert_eq!(
+            to_sentence_case("hello. world! again? yes"),
+            "Hello. World! Again? Yes"
+        );
     }
 
     #[test]
@@ -471,7 +486,7 @@ mod tests {
         // 半角片假名 → 全角
         assert_eq!(half_to_full("ｱｲｳ"), "アイウ");
         assert_eq!(half_to_full("ｶﾞ"), "ガ"); // 半角浊音组合 → 单个全角浊音
-        // 往返（ASCII 部分）
+                                             // 往返（ASCII 部分）
         assert_eq!(full_to_half(&half_to_full("abc")), "abc");
     }
 
@@ -542,7 +557,10 @@ mod tests {
             vec!["hello".to_string(), "helvetica".to_string()]
         );
         // 前缀本身被排除；中日韩单字为候选
-        assert_eq!(word_completions(text, "中文", 10), vec!["中文站".to_string()]);
+        assert_eq!(
+            word_completions(text, "中文", 10),
+            vec!["中文站".to_string()]
+        );
         assert!(word_completions(text, "", 10).is_empty());
         assert!(word_completions(text, "zzz", 10).is_empty());
         // 限制数量：短优先

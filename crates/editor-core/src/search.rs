@@ -53,16 +53,36 @@ fn build_regex(query: &str, opts: &SearchOptions) -> Result<Regex, SearchError> 
     } else {
         fancy_regex::escape(query).into_owned()
     };
-    let pattern = if opts.case_sensitive { pattern } else { format!("(?i){pattern}") };
+    let pattern = if opts.case_sensitive {
+        pattern
+    } else {
+        format!("(?i){pattern}")
+    };
     Regex::new(&pattern).map_err(|e| SearchError::InvalidRegex(e.to_string()))
 }
 
 /// 整词边界校验：匹配首/尾是词字符时，其外侧必须不是词字符。
 fn boundary_ok(text: &str, byte_start: usize, byte_end: usize) -> bool {
-    let first = text[byte_start..].chars().next().map(is_word_char).unwrap_or(false);
-    let last = text[..byte_end].chars().next_back().map(is_word_char).unwrap_or(false);
-    let before = text[..byte_start].chars().next_back().map(is_word_char).unwrap_or(false);
-    let after = text[byte_end..].chars().next().map(is_word_char).unwrap_or(false);
+    let first = text[byte_start..]
+        .chars()
+        .next()
+        .map(is_word_char)
+        .unwrap_or(false);
+    let last = text[..byte_end]
+        .chars()
+        .next_back()
+        .map(is_word_char)
+        .unwrap_or(false);
+    let before = text[..byte_start]
+        .chars()
+        .next_back()
+        .map(is_word_char)
+        .unwrap_or(false);
+    let after = text[byte_end..]
+        .chars()
+        .next()
+        .map(is_word_char)
+        .unwrap_or(false);
     (!first || !before) && (!last || !after)
 }
 
@@ -94,7 +114,13 @@ impl ByteCharTable {
 
 /// 全部匹配（字符索引）。
 pub fn find_all(text: &str, query: &str, opts: &SearchOptions) -> Result<Vec<Match>, SearchError> {
-    Ok(find_matches(text, query, opts)?.into_iter().map(|m| Match { start: m.char_start, end: m.char_end }).collect())
+    Ok(find_matches(text, query, opts)?
+        .into_iter()
+        .map(|m| Match {
+            start: m.char_start,
+            end: m.char_end,
+        })
+        .collect())
 }
 
 struct ByteMatch {
@@ -104,7 +130,11 @@ struct ByteMatch {
     char_end: usize,
 }
 
-fn find_matches(text: &str, query: &str, opts: &SearchOptions) -> Result<Vec<ByteMatch>, SearchError> {
+fn find_matches(
+    text: &str,
+    query: &str,
+    opts: &SearchOptions,
+) -> Result<Vec<ByteMatch>, SearchError> {
     let re = build_regex(query, opts)?;
     let table = ByteCharTable::new(text);
     let mut out = vec![];
@@ -128,7 +158,13 @@ fn find_matches(text: &str, query: &str, opts: &SearchOptions) -> Result<Vec<Byt
 }
 
 /// 从 `from`（字符索引）开始查找第一个匹配；找不到时按 `wrap` 决定是否回绕到文首。
-pub fn find_next(text: &str, from: usize, query: &str, opts: &SearchOptions, wrap: bool) -> Result<Option<Match>, SearchError> {
+pub fn find_next(
+    text: &str,
+    from: usize,
+    query: &str,
+    opts: &SearchOptions,
+    wrap: bool,
+) -> Result<Option<Match>, SearchError> {
     let all = find_all(text, query, opts)?;
     Ok(match all.iter().find(|m| m.start >= from) {
         Some(m) => Some(*m),
@@ -214,14 +250,28 @@ mod tests {
 
     #[test]
     fn plain_case_sensitive() {
-        let m = find(TEXT, "Cat", SearchOptions { case_sensitive: true, ..Default::default() });
+        let m = find(
+            TEXT,
+            "Cat",
+            SearchOptions {
+                case_sensitive: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].start, 33);
     }
 
     #[test]
     fn whole_word() {
-        let m = find(TEXT, "cat", SearchOptions { whole_word: true, ..Default::default() });
+        let m = find(
+            TEXT,
+            "cat",
+            SearchOptions {
+                whole_word: true,
+                ..Default::default()
+            },
+        );
         // 只命中独立的 "cat" 和 "Cat"，不命中 category
         assert_eq!(m.len(), 2);
         assert_eq!(m[1].start, 33);
@@ -229,18 +279,35 @@ mod tests {
 
     #[test]
     fn cjk_char_offsets() {
-        let m = find(CJK, "ABC", SearchOptions { case_sensitive: true, ..Default::default() });
+        let m = find(
+            CJK,
+            "ABC",
+            SearchOptions {
+                case_sensitive: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].start, 2);
         assert_eq!(m[0].end, 5);
-        let m = find(CJK, "中文", SearchOptions { case_sensitive: true, ..Default::default() });
+        let m = find(
+            CJK,
+            "中文",
+            SearchOptions {
+                case_sensitive: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(m.len(), 2);
         assert_eq!(m[1].start, 5);
     }
 
     #[test]
     fn regex_mode() {
-        let opts = SearchOptions { regex: true, ..Default::default() };
+        let opts = SearchOptions {
+            regex: true,
+            ..Default::default()
+        };
         let m = find(TEXT, r"\bc\w+", opts);
         assert_eq!(m.len(), 3); // cat, category, Cat
         let m = find(TEXT, r"(?i)\bcat\b", opts);
@@ -249,18 +316,37 @@ mod tests {
 
     #[test]
     fn regex_invalid() {
-        let err = find_all(TEXT, "a(", &SearchOptions { regex: true, ..Default::default() });
+        let err = find_all(
+            TEXT,
+            "a(",
+            &SearchOptions {
+                regex: true,
+                ..Default::default()
+            },
+        );
         assert!(matches!(err, Err(SearchError::InvalidRegex(_))));
     }
 
     #[test]
     fn empty_query_error() {
-        assert_eq!(find_all(TEXT, "", &SearchOptions::default()), Err(SearchError::EmptyQuery));
+        assert_eq!(
+            find_all(TEXT, "", &SearchOptions::default()),
+            Err(SearchError::EmptyQuery)
+        );
     }
 
     #[test]
     fn replace_plain_literal() {
-        let (out, n) = replace_all(TEXT, "cat", "dog", &SearchOptions { whole_word: true, ..Default::default() }).unwrap();
+        let (out, n) = replace_all(
+            TEXT,
+            "cat",
+            "dog",
+            &SearchOptions {
+                whole_word: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(n, 2);
         assert!(out.contains("the dog sat"));
         assert!(out.contains("dog!"));
@@ -276,7 +362,10 @@ mod tests {
 
     #[test]
     fn replace_regex_capture_groups() {
-        let opts = SearchOptions { regex: true, ..Default::default() };
+        let opts = SearchOptions {
+            regex: true,
+            ..Default::default()
+        };
         let (out, n) = replace_all("john smith, jane doe", r"(\w+) (\w+)", "$2 $1", &opts).unwrap();
         assert_eq!(n, 2);
         assert_eq!(out, "smith john, doe jane");
@@ -284,7 +373,10 @@ mod tests {
 
     #[test]
     fn empty_match_regex_is_skipped_everywhere() {
-        let opts = SearchOptions { regex: true, ..Default::default() };
+        let opts = SearchOptions {
+            regex: true,
+            ..Default::default()
+        };
         // x* 可匹配空串：查找不得 panic，且不应产生空匹配项
         let m = find("abc", "x*", opts);
         assert!(m.is_empty());

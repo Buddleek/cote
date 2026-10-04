@@ -80,15 +80,30 @@ pub struct Bom {
 /// 识别 BOM。注意 UTF-32LE 的 BOM 是 UTF-16LE BOM 的前缀，必须先判 32 位。
 pub fn detect_bom(bytes: &[u8]) -> Option<Bom> {
     if bytes.starts_with(&[0xFF, 0xFE, 0x00, 0x00]) {
-        Some(Bom { kind: UtfKind::Utf32Le, len: 4 })
+        Some(Bom {
+            kind: UtfKind::Utf32Le,
+            len: 4,
+        })
     } else if bytes.starts_with(&[0x00, 0x00, 0xFE, 0xFF]) {
-        Some(Bom { kind: UtfKind::Utf32Be, len: 4 })
+        Some(Bom {
+            kind: UtfKind::Utf32Be,
+            len: 4,
+        })
     } else if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        Some(Bom { kind: UtfKind::Utf8, len: 3 })
+        Some(Bom {
+            kind: UtfKind::Utf8,
+            len: 3,
+        })
     } else if bytes.starts_with(&[0xFF, 0xFE]) {
-        Some(Bom { kind: UtfKind::Utf16Le, len: 2 })
+        Some(Bom {
+            kind: UtfKind::Utf16Le,
+            len: 2,
+        })
     } else if bytes.starts_with(&[0xFE, 0xFF]) {
-        Some(Bom { kind: UtfKind::Utf16Be, len: 2 })
+        Some(Bom {
+            kind: UtfKind::Utf16Be,
+            len: 2,
+        })
     } else {
         None
     }
@@ -124,7 +139,11 @@ fn utf32_encode(text: &str, le: bool) -> Vec<u8> {
     let mut out = Vec::with_capacity(text.len() * 4);
     for c in text.chars() {
         let unit = c as u32;
-        let bytes = if le { unit.to_le_bytes() } else { unit.to_be_bytes() };
+        let bytes = if le {
+            unit.to_le_bytes()
+        } else {
+            unit.to_be_bytes()
+        };
         out.extend_from_slice(&bytes);
     }
     out
@@ -161,7 +180,11 @@ fn utf16_decode(bytes: &[u8], le: bool) -> (String, bool) {
 fn utf16_encode(text: &str, le: bool) -> Vec<u8> {
     let mut out = Vec::with_capacity(text.len() * 2 + 2);
     for unit in text.encode_utf16() {
-        let bytes = if le { unit.to_le_bytes() } else { unit.to_be_bytes() };
+        let bytes = if le {
+            unit.to_le_bytes()
+        } else {
+            unit.to_be_bytes()
+        };
         out.extend_from_slice(&bytes);
     }
     out
@@ -234,7 +257,12 @@ pub fn decode_with(bytes: &[u8], encoding: &str) -> DecodeResult {
             text.replace_range(..'\u{FEFF}'.len_utf8(), "");
             had_bom = true;
         }
-        return DecodeResult { text, encoding: kind.name().to_string(), had_bom, had_errors };
+        return DecodeResult {
+            text,
+            encoding: kind.name().to_string(),
+            had_bom,
+            had_errors,
+        };
     }
 
     let enc = Encoding::for_label(encoding.as_bytes()).unwrap_or(encoding_rs::UTF_8);
@@ -286,7 +314,10 @@ pub fn encode_text(text: &str, encoding: &str, write_bom: bool) -> EncodeResult 
             bytes.extend_from_slice(kind.bom_bytes());
         }
         bytes.extend_from_slice(&body);
-        return EncodeResult { bytes, losses: vec![] };
+        return EncodeResult {
+            bytes,
+            losses: vec![],
+        };
     }
 
     let Some(enc) = Encoding::for_label(encoding.as_bytes()) else {
@@ -419,7 +450,9 @@ mod tests {
         let gbk_bytes = encode_text(sample, "GBK", false).bytes;
         let r = decode_auto(&gbk_bytes);
         assert_eq!(r.text, sample);
-        assert!(r.encoding.eq_ignore_ascii_case("GBK") || r.encoding.eq_ignore_ascii_case("GB18030"));
+        assert!(
+            r.encoding.eq_ignore_ascii_case("GBK") || r.encoding.eq_ignore_ascii_case("GB18030")
+        );
     }
 
     #[test]

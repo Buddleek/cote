@@ -29,12 +29,18 @@ pub fn config_dir() -> Option<PathBuf> {
     if cfg!(target_os = "windows") {
         std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("cote"))
     } else if cfg!(target_os = "macos") {
-        std::env::var_os("HOME")
-            .map(|h| PathBuf::from(h).join("Library").join("Application Support").join("cote"))
+        std::env::var_os("HOME").map(|h| {
+            PathBuf::from(h)
+                .join("Library")
+                .join("Application Support")
+                .join("cote")
+        })
     } else {
         std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config").join("cote")))
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config").join("cote"))
+            })
     }
 }
 

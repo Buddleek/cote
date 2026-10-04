@@ -61,8 +61,9 @@ fn kind_of_capture(name: &str) -> TokenKind {
             TokenKind::Property
         }
         "operator" => TokenKind::Operator,
-        "punctuation" | "punctuation.bracket" | "punctuation.delimiter"
-        | "punctuation.special" => TokenKind::Punct,
+        "punctuation" | "punctuation.bracket" | "punctuation.delimiter" | "punctuation.special" => {
+            TokenKind::Punct
+        }
         _ => TokenKind::Plain,
     }
 }
@@ -154,7 +155,11 @@ impl TsHighlighter {
                 tree_sitter_javascript::HIGHLIGHT_QUERY.to_string(),
                 tree_sitter_javascript::INJECTIONS_QUERY.to_string(),
             ),
-            TsLang::C => ("c", tree_sitter_c::HIGHLIGHT_QUERY.to_string(), String::new()),
+            TsLang::C => (
+                "c",
+                tree_sitter_c::HIGHLIGHT_QUERY.to_string(),
+                String::new(),
+            ),
             // 官方查询把 key 捕获为 string.special.key，但被其后的 @string 覆盖
             // （同范围多捕获时后写优先）；追加末尾规则让 JSON 键显示为 Property 色
             TsLang::Json => (
@@ -181,14 +186,14 @@ impl TsHighlighter {
                 tree_sitter_html::INJECTIONS_QUERY.to_string(),
             ),
         };
-        let mut config = match HighlightConfiguration::new(language, name, &highlights, &injections, "")
-        {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("[ts] {name} 高亮查询构建失败: {e}");
-                return None;
-            }
-        };
+        let mut config =
+            match HighlightConfiguration::new(language, name, &highlights, &injections, "") {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("[ts] {name} 高亮查询构建失败: {e}");
+                    return None;
+                }
+            };
         config.configure(RECOGNIZED);
         // configure 后，Highlight(i).0 即 RECOGNIZED[i] 的索引
         let kind_map = RECOGNIZED.iter().map(|n| kind_of_capture(n)).collect();
@@ -213,7 +218,12 @@ impl TsHighlighter {
     }
 
     fn highlight_internal(&mut self, text: &str) -> Vec<Span> {
-        let Self { highlighter, config, kind_map, .. } = self;
+        let Self {
+            highlighter,
+            config,
+            kind_map,
+            ..
+        } = self;
         let iter = match highlighter.highlight(config, text.as_bytes(), None, |_| None) {
             Ok(it) => it,
             Err(_) => return degraded(text),
@@ -255,13 +265,21 @@ impl TsHighlighter {
         let mut pos = 0usize;
         for s in spans {
             if s.start > pos {
-                merged.push(Span { start: pos, end: s.start, kind: TokenKind::Plain });
+                merged.push(Span {
+                    start: pos,
+                    end: s.start,
+                    kind: TokenKind::Plain,
+                });
             }
             merged.push(s);
             pos = merged.last().unwrap().end;
         }
         if pos < text.len() {
-            merged.push(Span { start: pos, end: text.len(), kind: TokenKind::Plain });
+            merged.push(Span {
+                start: pos,
+                end: text.len(),
+                kind: TokenKind::Plain,
+            });
         }
         merged
     }
@@ -272,7 +290,11 @@ fn degraded(text: &str) -> Vec<Span> {
     if text.is_empty() {
         vec![]
     } else {
-        vec![Span { start: 0, end: text.len(), kind: TokenKind::Plain }]
+        vec![Span {
+            start: 0,
+            end: text.len(),
+            kind: TokenKind::Plain,
+        }]
     }
 }
 
@@ -338,7 +360,9 @@ mod tests {
     #[test]
     fn unsupported_language_returns_none() {
         // Markdown / TOML 等未接入 tree-sitter，应回退扫描器
-        assert!(TsHighlighter::for_language(find_by_name(builtin(), "Markdown").unwrap()).is_none());
+        assert!(
+            TsHighlighter::for_language(find_by_name(builtin(), "Markdown").unwrap()).is_none()
+        );
         assert!(TsHighlighter::for_language(find_by_name(builtin(), "TOML").unwrap()).is_none());
         assert!(TsHighlighter::for_language(find_by_name(builtin(), "Ruby").unwrap()).is_none());
     }
@@ -360,11 +384,13 @@ mod tests {
         let code = "<div class=\"box\">文本</div>";
         let spans = hl.spans_for(code);
         // div → tag（映射为 Keyword）
-        assert!(spans.iter().any(|s| s.kind == TokenKind::Keyword
-            && &code[s.start..s.end] == "div"));
+        assert!(spans
+            .iter()
+            .any(|s| s.kind == TokenKind::Keyword && &code[s.start..s.end] == "div"));
         // class → attribute（映射为 Property）
-        assert!(spans.iter().any(|s| s.kind == TokenKind::Property
-            && &code[s.start..s.end] == "class"));
+        assert!(spans
+            .iter()
+            .any(|s| s.kind == TokenKind::Property && &code[s.start..s.end] == "class"));
         assert!(spans.iter().any(|s| s.kind == TokenKind::String));
         // 注释
         let code = "<!-- hi --><p>x</p>";

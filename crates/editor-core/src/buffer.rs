@@ -16,11 +16,15 @@ pub struct Buffer {
 
 impl Buffer {
     pub fn new() -> Self {
-        Self { rope: ropey::Rope::new() }
+        Self {
+            rope: ropey::Rope::new(),
+        }
     }
 
     pub fn from_text(text: &str) -> Self {
-        Self { rope: ropey::Rope::from_str(text) }
+        Self {
+            rope: ropey::Rope::from_str(text),
+        }
     }
 
     pub fn len_chars(&self) -> usize {
