@@ -433,6 +433,7 @@ body[data-theme="light"] .cm-t-punct { color: #666666; }
   cursor: pointer;
 }
 .modal button.primary { border-color: var(--accent); color: var(--accent); }
+.modal button:disabled { opacity: 0.45; cursor: default; }
 .modal input[type="text"] {
   width: 100%;
   font: 14px var(--font-mono);
