@@ -5,7 +5,7 @@
 installer/*.exe
 dist/
 node_modules/
-lib.rs
-pelican-bike.html
-pelican-bicycle.svg
-pelican-preview.png
+/lib.rs
+/pelican-bike.html
+/pelican-bicycle.svg
+/pelican-preview.png
