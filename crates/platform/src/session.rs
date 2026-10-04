@@ -19,6 +19,9 @@ pub struct Session {
     pub tabs: Vec<SessionTab>,
     #[serde(default)]
     pub active: usize,
+    /// 外观偏好："dark" / "light" / "system"（缺省跟随系统）
+    #[serde(default)]
+    pub theme: Option<String>,
 }
 
 /// 用户配置目录（Windows: %APPDATA%\cote；macOS: ~/Library/Application Support/cote；Linux: ~/.config/cote）。

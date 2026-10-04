@@ -34,7 +34,7 @@ Cote 是一款面向纯文本与轻量代码编辑的桌面编辑器：**语法�
 | 📑 **大纲与补全** | 按语言规则提取函数/类/标题，侧栏点击跳转；Ctrl+Space 文档内单词补全 |
 | 🧩 **JS 脚本** | `scripts/*.js` 自动进菜单，`cote.text()` / `cote.setText()` / `cote.selection()` 等 API，沙箱隔离（无文件/网络能力，防死循环） |
 | 🎨 **可定制语法** | JSON 定义自定义语言（关键词/注释符/大纲正则/标记模式），放入配置目录即生效 |
-| ♿ **细节** | Unicode 安全（grapheme 光标、NFC/NFD/NFKC/NFKD）、全角↔半角、CJK 字数统计、深浅色跟随、CJK 字体回退、AccessKit 无障碍 |
+| ♿ **细节** | Unicode 安全（grapheme 光标、NFC/NFD/NFKC/NFKD）、全角↔半角、CJK 字数统计、深浅色切换（跟随系统 / 手动，Ctrl+Shift+L）、CJK 字体回退、AccessKit 无障碍 |
 
 ## 快速开始
 

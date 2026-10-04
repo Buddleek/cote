@@ -260,13 +260,18 @@ pub struct EditorApp {
     status_msg: Option<(String, Instant)>,
     focus_main: bool,
     last_title: String,
+    /// 外观偏好（深色/浅色/跟随系统），随会话持久化
+    theme: egui::ThemePreference,
 }
 
 impl EditorApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         platform::fonts::install_cjk_fallback(&cc.egui_ctx);
-        cc.egui_ctx
-            .options_mut(|o| o.theme_preference = egui::ThemePreference::System);
+        // 外观偏好从会话恢复；旧会话/首次启动回退到跟随系统
+        let theme = platform::session::load_session()
+            .and_then(|s| s.theme.as_deref().and_then(theme_from_key))
+            .unwrap_or_default();
+        cc.egui_ctx.set_theme(theme);
         // 全局字体层级（菜单栏 15.5 基准的放大版）
         cc.egui_ctx.style_mut(|style| {
             style.text_styles.insert(
@@ -289,6 +294,7 @@ impl EditorApp {
             last_autosave: Some(Instant::now()),
             // 大纲侧栏默认关闭（查看 → 大纲 开启）
             show_outline: false,
+            theme,
             ..Default::default()
         };
         app.user_syntaxes = platform::session::config_dir()
@@ -606,7 +612,53 @@ impl EditorApp {
             })
             .collect();
         let active = self.active.min(self.tabs.len().saturating_sub(1));
-        platform::session::save_session(&platform::session::Session { tabs, active });
+        platform::session::save_session(&platform::session::Session {
+            tabs,
+            active,
+            theme: Some(theme_key(self.theme).to_string()),
+        });
+    }
+
+    // ---------- 外观（深色/浅色切换） ----------
+
+    /// 应用外观偏好并持久化（相同偏好为 no-op）。
+    fn apply_theme(&mut self, ctx: &egui::Context, pref: egui::ThemePreference) {
+        if self.theme == pref {
+            return;
+        }
+        self.theme = pref;
+        ctx.set_theme(pref);
+        self.save_session();
+        self.status(format!("外观已切换为{}", theme_name(pref)));
+    }
+
+    /// 深色 ↔ 浅色 快速切换（跟随系统时按当前生效的实际主题决定另一侧）。
+    fn toggle_theme(&mut self, ctx: &egui::Context) {
+        let next = match ctx.theme() {
+            egui::Theme::Dark => egui::ThemePreference::Light,
+            egui::Theme::Light => egui::ThemePreference::Dark,
+        };
+        self.apply_theme(ctx, next);
+    }
+
+    /// 外观子菜单：深色 / 浅色 / 跟随系统（● 标记当前）。
+    fn theme_menu(&mut self, ui: &mut egui::Ui) {
+        for (label, pref) in [
+            ("深色", egui::ThemePreference::Dark),
+            ("浅色", egui::ThemePreference::Light),
+            ("跟随系统", egui::ThemePreference::System),
+        ] {
+            let current = self.theme == pref;
+            let text = if current {
+                format!("● {label}")
+            } else {
+                format!("　{label}")
+            };
+            if ui.button(text).clicked() {
+                self.apply_theme(ui.ctx(), pref);
+                ui.close();
+            }
+        }
     }
 
     fn restore_session(&mut self) {
@@ -1030,7 +1082,7 @@ impl EditorApp {
             self.do_redo();
         }
 
-        let (f, s, o, n, t, w, g, space, esc) = ctx.input(|i| {
+        let (f, s, o, n, t, w, g, space, esc, l) = ctx.input(|i| {
             (
                 i.key_pressed(egui::Key::F),
                 i.key_pressed(egui::Key::S),
@@ -1041,6 +1093,7 @@ impl EditorApp {
                 i.key_pressed(egui::Key::G),
                 i.key_pressed(egui::Key::Space),
                 i.key_pressed(egui::Key::Escape),
+                i.key_pressed(egui::Key::L),
             )
         });
         let (cmd, shift) = ctx.input(|i| (i.modifiers.command, i.modifiers.shift));
@@ -1072,6 +1125,10 @@ impl EditorApp {
         if cmd && g {
             self.completion = None;
             self.goto_open = true;
+        }
+        // 外观深浅切换（菜单项同款动作）
+        if cmd && shift && l {
+            self.toggle_theme(ctx);
         }
         if cmd && space {
             self.open_completion();
@@ -1135,6 +1192,34 @@ impl EditorApp {
             self.search_open = false;
             self.goto_open = false;
         }
+    }
+}
+
+/// 外观偏好 → 会话持久化键。
+fn theme_key(t: egui::ThemePreference) -> &'static str {
+    match t {
+        egui::ThemePreference::Dark => "dark",
+        egui::ThemePreference::Light => "light",
+        egui::ThemePreference::System => "system",
+    }
+}
+
+/// 会话持久化键 → 外观偏好（旧会话无此键或未知值回退 None = 跟随系统）。
+fn theme_from_key(s: &str) -> Option<egui::ThemePreference> {
+    match s {
+        "dark" => Some(egui::ThemePreference::Dark),
+        "light" => Some(egui::ThemePreference::Light),
+        "system" => Some(egui::ThemePreference::System),
+        _ => None,
+    }
+}
+
+/// 外观偏好中文名（菜单/状态栏显示）。
+fn theme_name(t: egui::ThemePreference) -> &'static str {
+    match t {
+        egui::ThemePreference::Dark => "深色",
+        egui::ThemePreference::Light => "浅色",
+        egui::ThemePreference::System => "跟随系统",
     }
 }
 
@@ -1331,6 +1416,18 @@ impl eframe::App for EditorApp {
                         if self.show_outline { "● 大纲" } else { "　大纲" };
                     if ui.button(outline_label).clicked() {
                         self.show_outline = !self.show_outline;
+                        ui.close();
+                    }
+                    ui.separator();
+                    ui.menu_button("外观", |ui| self.theme_menu(ui));
+                    if ui
+                        .add(
+                            egui::Button::new("切换深色 / 浅色")
+                                .shortcut_text("Ctrl+Shift+L"),
+                        )
+                        .clicked()
+                    {
+                        self.toggle_theme(ctx);
                         ui.close();
                     }
                     ui.separator();
@@ -1727,6 +1824,12 @@ impl eframe::App for EditorApp {
                 ui.menu_button(
                     egui::RichText::new(format!("语言: {lang_name}")).size(14.0),
                     |ui| self.language_menu(ui),
+                );
+                // 外观快捷切换（查看 → 外观 同款）
+                ui.menu_button(
+                    egui::RichText::new(format!("外观: {}", theme_name(self.theme)))
+                        .size(14.0),
+                    |ui| self.theme_menu(ui),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(msg) = &status_msg {
