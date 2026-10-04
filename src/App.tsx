@@ -69,6 +69,7 @@ export function App() {
   const [findCurrent, setFindCurrent] = useState(0);
   const [findError, setFindError] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState<number[]>([]);
+  const [initError, setInitError] = useState<string | null>(null);
 
   const [themeRef, theme, setThemeState] = useRefState<Theme>("system");
   const [outlineOpenRef, outlineOpen, setOutlineOpen] = useRefState(false);
@@ -260,6 +261,13 @@ export function App() {
       .catch(() => undefined);
   }
 
+  /** 全文被整体替换后（撤销/变换/替换全部/重载/编码/换行/脚本）统一刷新派生视图。 */
+  function afterDocReplaced(tabId: number) {
+    refreshHighlight(tabId);
+    if (outlineOpenRef.current) refreshOutline(tabId);
+    if (findOpenRef.current && findQueryRef.current) refreshFind();
+  }
+
   // ---------- 文件 ----------
 
   async function doNewTab() {
@@ -325,8 +333,7 @@ export function App() {
     if (r.ok) {
       const view = views.current.get(tabId);
       if (view) replaceWholeDoc(view, r.tab.text);
-      refreshHighlight(tabId);
-      if (outlineOpenRef.current) refreshOutline(tabId);
+      afterDocReplaced(tabId);
     }
   }
 
@@ -376,7 +383,13 @@ export function App() {
     }
   }
 
-  function exitNow() {
+  async function exitNow() {
+    // 对照 egui 版 request_exit：关闭前持久化会话（只写 session.json，不碰文件）
+    try {
+      await api.saveSessionNow();
+    } catch {
+      // 会话保存失败不阻塞退出
+    }
     getCurrentWindow().destroy();
   }
 
@@ -420,9 +433,7 @@ export function App() {
         annotations: SyncAnnot.of(true),
       });
     });
-    refreshHighlight(tabId);
-    if (outlineOpenRef.current) refreshOutline(tabId);
-    if (findOpenRef.current && findQueryRef.current) refreshFind();
+    afterDocReplaced(tabId);
   }
 
   // ---------- 查找 / 替换 ----------
@@ -523,8 +534,7 @@ export function App() {
     if (view) replaceWholeDoc(view, r.text);
     applyList(r.list);
     setStatus(r.message);
-    refreshHighlight(tabId);
-    refreshFind();
+    afterDocReplaced(tabId);
   }
 
   // ---------- 跳转 / 大纲 ----------
@@ -562,9 +572,7 @@ export function App() {
     const view = views.current.get(tabId);
     if (view) replaceWholeDoc(view, r.text);
     applyList(r.list);
-    refreshHighlight(tabId);
-    if (outlineOpenRef.current) refreshOutline(tabId);
-    if (findOpenRef.current && findQueryRef.current) refreshFind();
+    afterDocReplaced(tabId);
   }
 
   function transformLine(kind: string) {
@@ -580,8 +588,7 @@ export function App() {
     if (view && r.text !== view.state.doc.toString()) replaceWholeDoc(view, r.text);
     applyList(r.list);
     setStatus(r.message);
-    refreshHighlight(tabId);
-    if (outlineOpenRef.current) refreshOutline(tabId);
+    afterDocReplaced(tabId);
   }
 
   async function doSetNewline(le: string) {
@@ -591,6 +598,7 @@ export function App() {
     if (view && r.text !== view.state.doc.toString()) replaceWholeDoc(view, r.text);
     applyList(r.list);
     setStatus(r.message);
+    afterDocReplaced(tabId);
   }
 
   async function doSetLanguage(name: string | null) {
@@ -611,7 +619,9 @@ export function App() {
 
   async function doRunScript(name: string) {
     const tabId = activeIdRef.current;
-    const r = await api.runScript(tabId, name);
+    // 传实时选区：TabState.selection 只在编辑时更新，会过期
+    const sel = activeView()?.state.selection.main;
+    const r = await api.runScript(tabId, name, sel?.anchor, sel?.head);
     const view = views.current.get(tabId);
     if (view) {
       if (r.changed && r.text !== view.state.doc.toString()) replaceWholeDoc(view, r.text);
@@ -621,10 +631,7 @@ export function App() {
     }
     applyList(r.list);
     setStatus(r.message);
-    if (r.changed) {
-      refreshHighlight(tabId);
-      if (outlineOpenRef.current) refreshOutline(tabId);
-    }
+    if (r.changed) afterDocReplaced(tabId);
   }
 
   // ---------- 外观 ----------
@@ -693,7 +700,7 @@ export function App() {
       darkMq.addEventListener("change", onSystemTheme);
       unlisteners.push(() => darkMq.removeEventListener("change", onSystemTheme));
     })().catch((e) => {
-      setStatus(`初始化失败：${e}`);
+      setInitError(String(e));
     });
 
     return () => {
@@ -724,6 +731,12 @@ export function App() {
           e.preventDefault();
           closeFind();
         }
+        return;
+      }
+      // F5 重新加载（无修饰键，须在 mod 分支之前）
+      if (key === "f5") {
+        e.preventDefault();
+        a.doReload?.();
         return;
       }
       if (!mod) return;
@@ -758,9 +771,6 @@ export function App() {
       } else if (e.shiftKey && key === "l") {
         e.preventDefault();
         a.toggleTheme?.();
-      } else if (key === "f5") {
-        e.preventDefault();
-        a.doReload?.();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -955,7 +965,16 @@ export function App() {
   // ---------- 渲染 ----------
 
   if (!ready) {
-    return <div style={{ padding: "20px", color: "var(--fg-dim)" }}>正在启动…</div>;
+    return (
+      <div style={{ padding: "20px", color: "var(--fg-dim)" }}>
+        正在启动…
+        {initError && (
+          <div style={{ color: "var(--warn)", marginTop: 12, whiteSpace: "pre-wrap" }}>
+            初始化失败：{initError}
+          </div>
+        )}
+      </div>
+    );
   }
 
   const showBanner = activeMeta?.externally_changed && !dismissed.includes(activeMeta.id);

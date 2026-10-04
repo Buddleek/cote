@@ -95,7 +95,9 @@ export const api = {
     ordered<string[]>("completions", { tabId, prefix }),
 
   listScripts: () => call<{ name: string }[]>("list_scripts"),
-  runScript: (tabId: number, name: string) => ordered<ScriptResult>("run_script", { tabId, name }),
+  runScript: (tabId: number, name: string, anchor?: number, head?: number) =>
+    ordered<ScriptResult>("run_script", { tabId, name, anchor: anchor ?? null, head: head ?? null }),
 
   setTheme: (theme: string) => call<void>("set_theme", { theme }),
+  saveSessionNow: () => ordered<void>("save_session_now"),
 };

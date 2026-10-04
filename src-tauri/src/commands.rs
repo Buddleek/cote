@@ -1060,7 +1060,13 @@ pub struct ScriptResult {
 }
 
 #[tauri::command]
-pub fn run_script(state: State<'_, AppState>, tab_id: u64, name: String) -> ScriptResult {
+pub fn run_script(
+    state: State<'_, AppState>,
+    tab_id: u64,
+    name: String,
+    anchor: Option<usize>,
+    head: Option<usize>,
+) -> ScriptResult {
     let mut inner = lock(&state);
     let Some(idx) = tab_idx(&inner, tab_id) else {
         return ScriptResult {
@@ -1085,9 +1091,17 @@ pub fn run_script(state: State<'_, AppState>, tab_id: u64, name: String) -> Scri
         };
     };
     let text = inner.tabs[idx].doc.text();
+    // 选区以前端传入的实时值为准（TabState.selection 仅在编辑时更新，会过期）
+    let selection = match (anchor, head) {
+        (Some(a), Some(h)) => {
+            let (lo, hi) = if a <= h { (a, h) } else { (h, a) };
+            Some((utf16_to_char(&text, lo), utf16_to_char(&text, hi)))
+        }
+        _ => inner.tabs[idx].selection,
+    };
     let api = ScriptApi {
         text: text.clone(),
-        selection: inner.tabs[idx].selection,
+        selection,
         status: None,
     };
     match script_host::run_script(&s.source, &api) {
@@ -1129,5 +1143,12 @@ pub fn run_script(state: State<'_, AppState>, tab_id: u64, name: String) -> Scri
 pub fn set_theme(state: State<'_, AppState>, theme: String) {
     let mut inner = lock(&state);
     inner.theme = theme;
+    save_session(&inner);
+}
+
+/// 只持久化会话（不动文件）。退出前由前端调用，保证光标位置最新。
+#[tauri::command]
+pub fn save_session_now(state: State<'_, AppState>) {
+    let inner = lock(&state);
     save_session(&inner);
 }

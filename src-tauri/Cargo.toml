@@ -25,3 +25,7 @@ editor-core = { workspace = true }
 syntax-engine = { workspace = true }
 platform = { workspace = true }
 script-host = { workspace = true }
+
+# release GUI 子系统下向父终端输出（--version/--help）
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_System_Console"] }
