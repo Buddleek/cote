@@ -1,0 +1,9 @@
+[package]
+name = "script-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "User scripting runtime (JS via boa_engine) and editor API bridge"
+
+[dependencies]
+boa_engine = "0.20"

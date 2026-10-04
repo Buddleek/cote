@@ -1,0 +1,12 @@
+[package]
+name = "platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Platform adapters: file dialogs, atomic writes, font fallbacks"
+
+[dependencies]
+rfd = "0.15"
+eframe = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

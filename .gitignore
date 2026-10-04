@@ -1,0 +1,7 @@
+/target
+**/*.rs.bk
+.cote-tmp
+*.cote-tmp
+installer/*.exe
+dist/
+"lib.rs pelican-bike.html"  

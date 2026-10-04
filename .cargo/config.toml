@@ -1,0 +1,12 @@
+# Windows GNU 工具链配置。
+#
+# rustc 的 link-self-contained=auto 在检测到 PATH 上的外部 MinGW（如 w64devkit）时
+# 会切换到外部链接模式，但外部工具链缺少 rust 运行时需要的 libgcc_eh.a 等，
+# 导致 "cannot find -lgcc_eh"。这里强制使用 rust-mingw 自带的链接器与 CRT；
+# 外部 MinGW 仍需在 PATH 上，供 windows-* crate 的 build script 调用 dlltool 生成导入库。
+[target.x86_64-pc-windows-gnu]
+# 强制使用 rust-mingw 自带链接器与 CRT。
+# 注意：不要在此追加 -L native 指向外部 MinGW 库目录——那会让 msvcrt/libgcc
+# 解析到外部版本，与自带 CRT 混用导致构建脚本 STATUS_STACK_OVERFLOW。
+# 缺失的系统导入库（如 shlwapi）直接复制进工具链的 self-contained 目录。
+rustflags = ["-C", "link-self-contained=yes"]

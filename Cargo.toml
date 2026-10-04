@@ -1,0 +1,52 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/editor-core",
+    "crates/syntax-engine",
+    "crates/platform",
+    "crates/script-host",
+    "crates/editor-ui",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "A lightweight cross-platform plain-text editor inspired by CotEditor"
+
+[workspace.dependencies]
+# editor-core
+ropey = "1"
+encoding_rs = "0.8"
+chardetng = "0.1"
+fancy-regex = "0.14"
+regex = "1"
+
+# tree-sitter 高亮（语法树解析；grammar crates 由 syntax-engine 直接依赖）
+tree-sitter = "0.25"
+tree-sitter-highlight = "0.25"
+unicode-segmentation = "1"
+unicode-normalization = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# UI（关闭 wgpu 后端，仅用 glow：编译更快，Windows/Linux/macOS 都够用）
+eframe = { version = "0.32", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "glow",
+    "wayland",
+    "x11",
+] }
+
+# 打包共享
+editor-core = { path = "crates/editor-core" }
+syntax-engine = { path = "crates/syntax-engine" }
+platform = { path = "crates/platform" }
+script-host = { path = "crates/script-host" }
+editor-ui = { path = "crates/editor-ui" }
+
+[profile.release]
+lto = "thin"
+strip = true

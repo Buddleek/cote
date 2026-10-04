@@ -1,0 +1,14 @@
+[package]
+name = "editor-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+
+[dependencies]
+ropey = { workspace = true }
+encoding_rs = { workspace = true }
+chardetng = { workspace = true }
+fancy-regex = { workspace = true }
+unicode-segmentation = { workspace = true }
+unicode-normalization = { workspace = true }

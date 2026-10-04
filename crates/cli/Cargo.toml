@@ -1,0 +1,22 @@
+[package]
+name = "cote-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Command-line entry point for the Cote editor"
+
+[[bin]]
+name = "cote"
+path = "src/main.rs"
+
+[dependencies]
+editor-ui = { workspace = true }
+eframe = { workspace = true }
+
+# release GUI 子系统下向父终端输出（--version/--help）
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_System_Console"] }
+
+# 图标/版本信息资源嵌入（GNU 工具链走 windres）
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
