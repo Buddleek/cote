@@ -2,7 +2,6 @@
 // 子菜单（Unicode 规范化 / 外观）支持一层嵌套。
 
 import { useEffect, useRef, useState } from "preact/hooks";
-
 export interface MenuEntry {
   label?: string;
   accel?: string;
@@ -57,18 +56,28 @@ function EntryList({ entries, onPick }: { entries: MenuEntry[]; onPick: () => vo
 }
 
 function SubmenuEntry({ entry, onPick }: { entry: MenuEntry; onPick: () => void }) {
-  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
   return (
     <div
       style="position: relative"
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
+      onMouseEnter={() => {
+        // fixed 定位跳出父 dropdown 的 overflow 裁剪；按触发项实测坐标摆放
+        const r = btnRef.current?.getBoundingClientRect();
+        if (r) {
+          setPos({
+            left: Math.min(r.right - 4, window.innerWidth - 240),
+            top: Math.max(4, Math.min(r.top - 5, window.innerHeight - 180)),
+          });
+        }
+      }}
+      onMouseLeave={() => setPos(null)}
     >
-      <button class="entry">
+      <button ref={btnRef} class="entry">
         <span>{entry.label} ▸</span>
       </button>
-      {open && (
-        <div class="dropdown" style="left: 100%; top: -5px;">
+      {pos && (
+        <div class="dropdown" style={`position: fixed; left: ${pos.left}px; top: ${pos.top}px; max-height: none;`}>
           <EntryList entries={entry.submenu ?? []} onPick={onPick} />
         </div>
       )}

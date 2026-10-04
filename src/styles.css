@@ -115,6 +115,8 @@ body {
 .dropdown .entry .accel { color: var(--fg-dim); }
 .dropdown .entry.checked::before { content: "●"; margin-right: 6px; }
 .dropdown .entry:not(.checked)::before { content: "　"; margin-right: 6px; }
+/* label 占满剩余空间靠左；accel 靠右（::before 占位伪元素不参与推挤） */
+.dropdown .entry > span:first-of-type { margin-right: auto; }
 .dropdown .sep { height: 1px; background: var(--border); margin: 4px 0; }
 .dropdown .group-label {
   color: var(--fg-dim);
@@ -392,9 +394,12 @@ body[data-theme="light"] .cm-t-punct { color: #666666; }
 .statusbar .warn { color: var(--warn); }
 
 .statusbar .pop {
-  position: absolute;
+  /* 覆盖 .dropdown 的 top:100%/left:0——否则与 bottom/right 双重约束把高度钳成 0 */
+  top: auto;
+  left: auto;
   bottom: 100%;
   right: 0;
+  margin-bottom: 4px;
 }
 
 /* ---------- 对话框 ---------- */
