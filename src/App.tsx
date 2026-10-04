@@ -10,6 +10,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, type ViewUpdate } from "@codemirror/view";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { api } from "./backend";
@@ -70,6 +71,7 @@ export function App() {
   const [findError, setFindError] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState<number[]>([]);
   const [initError, setInitError] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
 
   const [themeRef, theme, setThemeState] = useRefState<Theme>("system");
   const [outlineOpenRef, outlineOpen, setOutlineOpen] = useRefState(false);
@@ -693,6 +695,21 @@ export function App() {
         actions.current.requestExit?.([] as never);
       });
 
+      // 拖放文件到窗口 → 打开（Tauri 拦截原生 drop，事件从这里来）
+      unlisteners.push(
+        await getCurrentWebview().onDragDropEvent((event) => {
+          const p = event.payload;
+          if (p.type === "enter" || p.type === "over") {
+            setDragOver(true);
+          } else if (p.type === "drop") {
+            setDragOver(false);
+            for (const path of p.paths) void doOpenPath(path);
+          } else {
+            setDragOver(false);
+          }
+        }),
+      );
+
       // 系统主题变化（跟随系统时生效）
       const onSystemTheme = () => {
         if (themeRef.current === "system") applyThemeToDom("system");
@@ -994,6 +1011,7 @@ export function App() {
         }}
         onClose={(id) => void requestCloseTab(id)}
       />
+      {dragOver && <div class="drop-overlay">释放以打开文件</div>}
       <div class="main-area">
         <div class="editor-column">
           {showBanner && (
