@@ -22,7 +22,7 @@ Cote 是一款面向纯文本与轻量代码编辑的桌面编辑器：**语法�
 
 自 v0.2.0 起界面迁移到 **Tauri 2 + 系统 WebView**（Windows: WebView2 / macOS: WKWebView /
 Linux: WebKitGTK），前端使用 Preact + CodeMirror 6；编辑内核不变。
-egui 版实现保留在 git 历史与 `main` 分支。
+egui 版实现仅存于 git 历史（已随 `main` 分支移除）。
 
 ## 特性一览
 
