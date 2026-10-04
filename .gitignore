@@ -4,4 +4,5 @@
 *.cote-tmp
 installer/*.exe
 dist/
-"lib.rs pelican-bike.html"  
+"lib.rs
+pelican-bike.html"  

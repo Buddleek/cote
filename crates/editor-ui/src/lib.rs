@@ -428,6 +428,29 @@ impl EditorApp {
                 return;
             }
         }
+        // 唯一标签是干净、空白的未命名页 → 直接复用它加载（不残留空标签）
+        if self.tabs.len() == 1 {
+            let only = &mut self.tabs[0];
+            if only.doc.path().is_none() && !only.is_dirty() && only.text.is_empty() {
+                match Self::load_into(only, path) {
+                    Ok(()) => {
+                        self.active = 0;
+                        self.focus_main = true;
+                        let t = &self.tabs[0];
+                        let lines = t.text.lines().count();
+                        self.status(format!(
+                            "已打开 {}（{}，{} 行）",
+                            t.display_name(),
+                            t.doc.encoding_name(),
+                            lines
+                        ));
+                        self.save_session();
+                    }
+                    Err(e) => self.status(format!("打开失败：{e}")),
+                }
+                return;
+            }
+        }
         let idx = self.new_tab_silent();
         match Self::load_into(&mut self.tabs[idx], path) {
             Ok(()) => {
@@ -1347,6 +1370,10 @@ impl eframe::App for EditorApp {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     let visuals = ui.style().visuals.clone();
+                    // 即时模式纪律：遍历中只收集动作，循环结束后统一执行——
+                    // 否则关闭标签会同步缩短 tabs，循环下一轮越界 panic
+                    let mut close_request: Option<usize> = None;
+                    let mut switch_request: Option<usize> = None;
                     for i in 0..self.tabs.len() {
                         let (mut name, is_active, edit_key) = {
                             let t = &self.tabs[i];
@@ -1440,11 +1467,11 @@ impl eframe::App for EditorApp {
                             },
                         );
                         if close_resp.clicked() {
-                            self.request_close_tab(i);
+                            close_request = close_request.or(Some(i));
                         } else if resp.middle_clicked() {
-                            self.request_close_tab(i); // 中键关闭
+                            close_request = close_request.or(Some(i)); // 中键关闭
                         } else if resp.clicked() && !is_active {
-                            self.switch_to(i);
+                            switch_request = switch_request.or(Some(i));
                         }
                         ui.add_space(3.0);
                     }
@@ -1470,6 +1497,13 @@ impl eframe::App for EditorApp {
                         egui::FontId::proportional(16.0),
                         visuals.text_color(),
                     );
+                    // 循环结束后统一执行标签切换与关闭（tabs 已不再被遍历持有）
+                    if let Some(i) = switch_request {
+                        self.switch_to(i);
+                    }
+                    if let Some(i) = close_request {
+                        self.request_close_tab(i);
+                    }
                     if plus_resp.clicked() {
                         self.new_tab();
                     }
