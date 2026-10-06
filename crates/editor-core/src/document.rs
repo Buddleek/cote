@@ -428,7 +428,10 @@ impl Document {
 
     /// 设置保存用编码（元数据变更，本身不改内容）。
     pub fn set_encoding(&mut self, name: &str) -> bool {
-        if encoding_rs::Encoding::for_label(name.as_bytes()).is_some() {
+        // UTF-32 不在 encoding_rs 标签表内（手写实现），须单独认可
+        let known = encoding_rs::Encoding::for_label(name.as_bytes()).is_some()
+            || encoding::UtfKind::from_name(name).is_some();
+        if known {
             self.encoding = name.to_string();
             self.dirty = true;
             true
@@ -650,6 +653,20 @@ mod tests {
         assert_eq!(d.text(), "fresh");
         assert!(!d.is_dirty());
         assert_eq!(d.undo_depth(), 0);
+    }
+
+    #[test]
+    fn set_encoding_accepts_utf32() {
+        // UTF-32 不在 encoding_rs 标签表内，但手写实现可用，不能报"未知编码"
+        let mut d = doc("中文");
+        assert!(d.set_encoding("UTF-32LE"));
+        let out = d.to_bytes(true);
+        assert_eq!(
+            &out.bytes[..8],
+            &[0xFF, 0xFE, 0x00, 0x00, 0x2D, 0x4E, 0x00, 0x00]
+        );
+        assert!(!d.set_encoding("NOT-A-CODEC"));
+        assert_eq!(d.encoding_name(), "UTF-32LE");
     }
 
     #[test]

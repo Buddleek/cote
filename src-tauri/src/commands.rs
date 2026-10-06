@@ -645,7 +645,11 @@ pub fn replace_all(
     let text = inner.tabs[idx].doc.text();
     match search::replace_all(&text, &query, &replacement, &search_options(&opts)) {
         Ok((new_text, n)) => {
-            inner.tabs[idx].doc.replace_all_text(&new_text);
+            {
+                let t = &mut inner.tabs[idx];
+                t.doc.replace_all_text(&new_text);
+                t.mixed_newline = t.doc.newline_info().mixed();
+            }
             ReplaceAllResult {
                 count: n,
                 text: new_text.clone(),
@@ -743,7 +747,9 @@ pub fn transform(
     };
     match applied {
         Ok(new_text) => {
-            inner.tabs[idx].doc.replace_all_text(&new_text);
+            let t = &mut inner.tabs[idx];
+            t.doc.replace_all_text(&new_text);
+            t.mixed_newline = t.doc.newline_info().mixed();
             TransformResult {
                 text: new_text,
                 message: None,
@@ -1108,7 +1114,9 @@ pub fn run_script(
         Ok(out) => {
             let changed = out.text != text;
             if changed {
-                inner.tabs[idx].doc.replace_all_text(&out.text);
+                let t = &mut inner.tabs[idx];
+                t.doc.replace_all_text(&out.text);
+                t.mixed_newline = t.doc.newline_info().mixed();
             }
             let sel = out.selection.map(|(a, h)| {
                 let new_text = inner.tabs[idx].doc.text();

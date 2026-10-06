@@ -138,11 +138,14 @@ export function dispatchMatches(
   view.dispatch({ effects: setMatches.of(matches) });
 }
 
-/** 用后端下发的新文本整体替换文档（undo/重载/变换/替换全部等）。 */
+/** 用后端下发的新文本整体替换文档（undo/重载/变换/替换全部等）。
+ *  cursor 显式给出目标光标（UTF-16 偏移，超界夹紧）：整体替换会把旧选区
+ *  映射到新文末，不传则光标跳到结尾。 */
 export function replaceWholeDoc(view: EditorView, text: string, cursor?: number, select?: [number, number]) {
+  const cur = cursor !== undefined ? Math.max(0, Math.min(cursor, text.length)) : undefined;
   view.dispatch({
     changes: { from: 0, to: view.state.doc.length, insert: text },
-    selection: select ? { anchor: select[0], head: select[1] } : cursor !== undefined ? { anchor: cursor } : undefined,
+    selection: select ? { anchor: select[0], head: select[1] } : cur !== undefined ? { anchor: cur } : undefined,
     annotations: SyncAnnot.of(true),
     scrollIntoView: true,
   });

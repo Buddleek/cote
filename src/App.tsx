@@ -96,6 +96,8 @@ export function App() {
   const findCurrentRef = useRef(0);
   const lastCloseId = useRef(0);
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  /** 已提示过"高亮被跳过"的标签，避免每次编辑都覆盖状态栏消息 */
+  const truncWarned = useRef(new Set<number>());
 
   // 动作表：全局事件监听器通过它调用最新闭包
   const actions = useRef<Record<string, (...args: never[]) => void>>({});
@@ -228,12 +230,12 @@ export function App() {
     if (findOpenRef.current && findQueryRef.current) schedule("find", 250, () => refreshFind());
   }
 
-  function reportStatus(tabId: number) {
+  function reportStatus(tabId: number): Promise<void> {
     const view = views.current.get(tabId);
-    if (!view) return;
+    if (!view) return Promise.resolve();
     const c = computeCursor(view);
     cursorLineRef.current = c.line;
-    api
+    return api
       .docStatus(tabId, c.line, c.col)
       .then((r) => {
         if (activeIdRef.current !== tabId) return;
@@ -250,6 +252,14 @@ export function App() {
         if (activeIdRef.current !== tabId) return;
         const view = views.current.get(tabId);
         if (view) dispatchSpans(view, r.spans);
+        if (r.truncated) {
+          if (!truncWarned.current.has(tabId)) {
+            truncWarned.current.add(tabId);
+            setStatus("文件超过 1 MB，已跳过语法高亮");
+          }
+        } else {
+          truncWarned.current.delete(tabId);
+        }
       })
       .catch(() => undefined);
   }
@@ -287,10 +297,10 @@ export function App() {
   async function doOpenPath(path: string) {
     const r = await api.openFile(path);
     if (r.tab) {
-      // 复用空未命名标签时视图已存在 → 同步新文本
+      // 复用空未命名标签时视图已存在 → 同步新文本（打开文件光标回到开头）
       const view = views.current.get(r.tab.meta.id);
       if (view) {
-        if (view.state.doc.toString() !== r.tab.text) replaceWholeDoc(view, r.tab.text);
+        if (view.state.doc.toString() !== r.tab.text) replaceWholeDoc(view, r.tab.text, 0);
       } else {
         createView(r.tab.meta.id, r.tab.text);
       }
@@ -334,7 +344,8 @@ export function App() {
     setStatus(r.message);
     if (r.ok) {
       const view = views.current.get(tabId);
-      if (view) replaceWholeDoc(view, r.tab.text);
+      // 重新加载 = 从磁盘重开文件，光标归位到开头（对照 egui load_into）
+      if (view) replaceWholeDoc(view, r.tab.text, 0);
       afterDocReplaced(tabId);
     }
   }
@@ -371,6 +382,7 @@ export function App() {
   function finishClose(r: { closed: boolean; list: TabList }, closedId: number) {
     if (!r.closed) return;
     destroyView(closedId);
+    truncWarned.current.delete(closedId);
     applyList(r.list);
     schedule("hl", 50, () => refreshHighlight(activeIdRef.current));
     if (outlineOpenRef.current) schedule("ol", 50, () => refreshOutline(activeIdRef.current));
@@ -386,7 +398,9 @@ export function App() {
   }
 
   async function exitNow() {
-    // 对照 egui 版 request_exit：关闭前持久化会话（只写 session.json，不碰文件）
+    // 对照 egui 版 request_exit：关闭前持久化会话（只写 session.json，不碰文件）。
+    // 光标行列为防抖上报的，退出前同步补报一次，会话恢复才不会回到旧位置
+    await reportStatus(activeIdRef.current);
     try {
       await api.saveSessionNow();
     } catch {
@@ -531,9 +545,11 @@ export function App() {
       setStatus("查找内容为空");
       return;
     }
-    const r = await api.replaceAll(tabId, findQueryRef.current, replaceQueryRef.current, findOptsRef.current);
     const view = views.current.get(tabId);
-    if (view) replaceWholeDoc(view, r.text);
+    // 光标停在原偏移（对照 egui：全文替换不重定位，超出新文长时由 CM 夹紧）
+    const cur = view?.state.selection.main.head;
+    const r = await api.replaceAll(tabId, findQueryRef.current, replaceQueryRef.current, findOptsRef.current);
+    if (view) replaceWholeDoc(view, r.text, cur);
     applyList(r.list);
     setStatus(r.message);
     afterDocReplaced(tabId);
@@ -566,13 +582,14 @@ export function App() {
 
   async function doTransform(kind: string, line?: number) {
     const tabId = activeIdRef.current;
+    const view = views.current.get(tabId);
+    const cur = view?.state.selection.main.head;
     const r = await api.transform(tabId, kind, line);
     if (r.message) {
       setStatus(r.message);
       return;
     }
-    const view = views.current.get(tabId);
-    if (view) replaceWholeDoc(view, r.text);
+    if (view) replaceWholeDoc(view, r.text, cur);
     applyList(r.list);
     afterDocReplaced(tabId);
   }
@@ -585,9 +602,10 @@ export function App() {
 
   async function doSetEncoding(enc: string) {
     const tabId = activeIdRef.current;
-    const r = await api.setEncoding(tabId, enc);
     const view = views.current.get(tabId);
-    if (view && r.text !== view.state.doc.toString()) replaceWholeDoc(view, r.text);
+    const cur = view?.state.selection.main.head;
+    const r = await api.setEncoding(tabId, enc);
+    if (view && r.text !== view.state.doc.toString()) replaceWholeDoc(view, r.text, cur);
     applyList(r.list);
     setStatus(r.message);
     afterDocReplaced(tabId);
@@ -595,9 +613,10 @@ export function App() {
 
   async function doSetNewline(le: string) {
     const tabId = activeIdRef.current;
-    const r = await api.setNewline(tabId, le);
     const view = views.current.get(tabId);
-    if (view && r.text !== view.state.doc.toString()) replaceWholeDoc(view, r.text);
+    const cur = view?.state.selection.main.head;
+    const r = await api.setNewline(tabId, le);
+    if (view && r.text !== view.state.doc.toString()) replaceWholeDoc(view, r.text, cur);
     applyList(r.list);
     setStatus(r.message);
     afterDocReplaced(tabId);
@@ -621,12 +640,15 @@ export function App() {
 
   async function doRunScript(name: string) {
     const tabId = activeIdRef.current;
-    // 传实时选区：TabState.selection 只在编辑时更新，会过期
-    const sel = activeView()?.state.selection.main;
-    const r = await api.runScript(tabId, name, sel?.anchor, sel?.head);
     const view = views.current.get(tabId);
+    // 传实时选区：TabState.selection 只在编辑时更新，会过期
+    const sel = view?.state.selection.main;
+    const r = await api.runScript(tabId, name, sel?.anchor, sel?.head);
     if (view) {
-      if (r.changed && r.text !== view.state.doc.toString()) replaceWholeDoc(view, r.text);
+      if (r.changed && r.text !== view.state.doc.toString()) {
+        // 脚本未指定新选区时，光标停在原偏移（对照 egui）
+        replaceWholeDoc(view, r.text, r.sel ? undefined : sel?.head);
+      }
       if (r.sel) {
         view.dispatch({ selection: { anchor: r.sel[0], head: r.sel[1] }, scrollIntoView: true });
       }

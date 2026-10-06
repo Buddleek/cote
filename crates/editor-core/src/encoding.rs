@@ -11,20 +11,29 @@
 
 use encoding_rs::{EncoderResult, Encoding};
 
-/// UI 直接展示的常用编码（FR-2.7：全集来自 encoding_rs，常用优先）。
+/// UI 直接展示的常用编码（FR-2.7：全集来自 encoding_rs + 手写 UTF-32，常用优先）。
+/// 注意不收录 ISO-8859-1：WHATWG 将该标签映射到 windows-1252，单独列出只会误导。
 pub const COMMON_ENCODINGS: &[&str] = &[
     "UTF-8",
     "UTF-16LE",
     "UTF-16BE",
+    "UTF-32LE",
+    "UTF-32BE",
     "GBK",
     "GB18030",
     "Big5",
     "Shift_JIS",
     "EUC-JP",
+    "ISO-2022-JP",
     "EUC-KR",
     "windows-1252",
     "windows-1251",
-    "ISO-8859-1",
+    "windows-1250",
+    "windows-1254",
+    "windows-874",
+    "ISO-8859-2",
+    "ISO-8859-15",
+    "KOI8-R",
 ];
 
 /// UTF 家族（含 encoding_rs 不覆盖的 UTF-32）。
@@ -375,6 +384,40 @@ pub fn unmappable_chars(text: &str, encoding: &str) -> Vec<(usize, char)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 菜单全集必须可用：每个编码都能用 ASCII 往返（编码→字节→解码还原）。
+    #[test]
+    fn common_encodings_all_roundtrip() {
+        for name in COMMON_ENCODINGS {
+            let bytes = encode_text("abc", name, false).bytes;
+            let r = decode_with(&bytes, name);
+            assert_eq!(r.text, "abc", "{name} 往返失败");
+            // encoding_rs 规范名可能与菜单标签大小写不同（如 gb18030）
+            assert!(
+                r.encoding.eq_ignore_ascii_case(name),
+                "{name} 解码后报告为 {}",
+                r.encoding
+            );
+            assert!(!r.had_errors);
+        }
+        // 多字节编码额外保证 CJK 无损；单字节编码丢弃 CJK 属预期（有损编码）
+        for name in [
+            "UTF-8",
+            "UTF-16LE",
+            "UTF-16BE",
+            "UTF-32LE",
+            "UTF-32BE",
+            "GBK",
+            "GB18030",
+            "Big5",
+            "Shift_JIS",
+            "EUC-JP",
+            "EUC-KR",
+        ] {
+            let bytes = encode_text("中文", name, false).bytes;
+            assert_eq!(decode_with(&bytes, name).text, "中文", "{name} 丢失 CJK");
+        }
+    }
 
     #[test]
     fn bom_detection_all_variants() {
