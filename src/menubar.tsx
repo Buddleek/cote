@@ -1,7 +1,7 @@
 // 数据驱动的菜单栏：点击展开、悬停切换、点击外部/Esc 关闭。
 // 子菜单（Unicode 规范化 / 外观）支持一层嵌套。
 
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useLayoutEffect, useRef, useState } from "preact/hooks";
 export interface MenuEntry {
   label?: string;
   accel?: string;
@@ -77,7 +77,10 @@ function SubmenuEntry({ entry, onPick }: { entry: MenuEntry; onPick: () => void 
         <span>{entry.label} ▸</span>
       </button>
       {pos && (
-        <div class="dropdown" style={`position: fixed; left: ${pos.left}px; top: ${pos.top}px; max-height: none;`}>
+        <div
+          class="dropdown sub"
+          style={`position: fixed; left: ${pos.left}px; top: ${pos.top}px; max-height: none;`}
+        >
           <EntryList entries={entry.submenu ?? []} onPick={onPick} />
         </div>
       )}
@@ -89,7 +92,9 @@ export function MenuBar({ menus }: { menus: MenuDef[] }) {
   const [openIdx, setOpenIdx] = useState<number | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
+  // useLayoutEffect 同步挂载关闭监听:useEffect 的 rAF 调度在窗口被遮挡/节流时
+  // 会迟一拍,导致打开后的第一次外部点击关不掉菜单
+  useLayoutEffect(() => {
     if (openIdx === null) return;
     const close = (e: MouseEvent) => {
       if (barRef.current && !barRef.current.contains(e.target as Node)) {

@@ -124,6 +124,12 @@ body {
   padding: 4px 14px 2px;
 }
 
+/* 二级菜单：宽度收缩为内容宽，不要跟着一级菜单的 min-width 留大片空白 */
+.dropdown.sub {
+  min-width: 0;
+  width: max-content;
+}
+
 /* ---------- 标签栏 ---------- */
 
 .tabbar {
@@ -382,15 +388,17 @@ body[data-theme="light"] .cm-t-punct { color: #666666; }
   text-overflow: ellipsis;
   color: var(--fg);
 }
+/* 弹层的定位锚点：包裹按钮，弹层作为兄弟节点挂在这里 */
+.statusbar .cell-wrap { position: relative; display: inline-flex; }
 .statusbar button.cell {
   background: none;
   border: none;
   color: var(--fg-dim);
   font: inherit;
   cursor: pointer;
-  position: relative;
 }
-.statusbar button.cell:hover { color: var(--fg); background: var(--hover); }
+.statusbar button.cell:hover,
+.statusbar button.cell.open { color: var(--fg); background: var(--hover); }
 .statusbar .warn { color: var(--warn); }
 
 .statusbar .pop {

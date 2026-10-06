@@ -1,6 +1,6 @@
 // 状态栏：光标行列、统计、状态消息 + 编码/换行/语言快捷菜单。
 
-import { useState } from "preact/hooks";
+import { useLayoutEffect, useRef, useState } from "preact/hooks";
 import type { MenuEntry } from "./menubar";
 import type { Stats, TabMeta } from "./types";
 
@@ -12,15 +12,36 @@ function CellDropdown({
   entries: MenuEntry[];
 }) {
   const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLSpanElement>(null);
+
+  // 与菜单栏一致：点击外部 / Esc 关闭。不能用 mouseleave——弹层向上弹出，
+  // 与按钮之间有间隙，移向弹层途中就会误关。用 useLayoutEffect（同步挂载）：
+  // Preact 的 useEffect 走 rAF 调度，窗口被遮挡时 rAF 停摆会导致监听器迟一拍。
+  useLayoutEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [open]);
+
   return (
-    <button
-      class="cell"
-      onClick={() => setOpen(!open)}
-      onMouseLeave={() => setOpen(false)}
-    >
-      {label}
+    <span class="cell-wrap" ref={wrapRef}>
+      <button class={`cell${open ? " open" : ""}`} onClick={() => setOpen(!open)}>
+        {label}
+      </button>
       {open && (
-        <div class="dropdown pop" onMouseEnter={() => setOpen(true)}>
+        <div class="dropdown pop">
           {entries.map((e, i) =>
             e.sep ? (
               <div class="sep" key={i} />
@@ -39,7 +60,7 @@ function CellDropdown({
           )}
         </div>
       )}
-    </button>
+    </span>
   );
 }
 
