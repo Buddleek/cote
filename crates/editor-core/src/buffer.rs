@@ -40,6 +40,48 @@ impl Buffer {
         self.rope.to_string()
     }
 
+    /// 与给定文本逐块比较（memcmp 级，无全文拷贝分配）。
+    pub fn eq_str(&self, other: &str) -> bool {
+        if self.rope.len_bytes() != other.len() {
+            return false;
+        }
+        let mut rest = other.as_bytes();
+        for chunk in self.rope.chunks() {
+            let cb = chunk.as_bytes();
+            if rest.len() < cb.len() || &rest[..cb.len()] != cb {
+                return false;
+            }
+            rest = &rest[cb.len()..];
+        }
+        rest.is_empty()
+    }
+
+    pub fn len_bytes(&self) -> usize {
+        self.rope.len_bytes()
+    }
+
+    /// 字符索引 → UTF-16 偏移（越界夹紧）。前端 CodeMirror 坐标转换用。
+    pub fn char_to_utf16(&self, idx: usize) -> usize {
+        self.rope.char_to_utf16_cu(idx.min(self.rope.len_chars()))
+    }
+
+    /// UTF-16 偏移 → 字符索引（越界夹紧到文本末尾）。
+    /// 落在代理对中间的偏移向后对齐到码点边界（与前端坐标语义一致）。
+    pub fn utf16_to_char(&self, idx: usize) -> usize {
+        let idx = idx.min(self.rope.len_utf16_cu());
+        let ch = self.rope.utf16_cu_to_char(idx);
+        if self.rope.char_to_utf16_cu(ch) == idx {
+            ch
+        } else {
+            ch + 1
+        }
+    }
+
+    /// 流式字符迭代（不物化全文），统计等 O(n) 扫描用。
+    pub fn chars(&self) -> ropey::iter::Chars<'_> {
+        self.rope.chars()
+    }
+
     /// 区间文本拷贝 `[start, end)`（字符索引）。
     pub fn slice(&self, start: usize, end: usize) -> String {
         let end = end.min(self.rope.len_chars());
@@ -173,5 +215,37 @@ mod tests {
         b.insert(100, "hi"); // 越界插入被夹紧
         assert_eq!(b.text(), "hi");
         assert_eq!(b.line(99), "");
+    }
+
+    #[test]
+    fn utf16_offsets() {
+        // 🙂 占 1 个字符、2 个 UTF-16 码元
+        let b = Buffer::from_text("a🙂中b");
+        assert_eq!(b.len_chars(), 4);
+        assert_eq!(b.char_to_utf16(0), 0);
+        assert_eq!(b.char_to_utf16(1), 1);
+        assert_eq!(b.char_to_utf16(2), 3); // 越过代理对
+        assert_eq!(b.char_to_utf16(3), 4);
+        assert_eq!(b.char_to_utf16(99), 5); // 越界夹紧
+        assert_eq!(b.utf16_to_char(0), 0);
+        assert_eq!(b.utf16_to_char(1), 1);
+        assert_eq!(b.utf16_to_char(2), 2); // 代理对第二码元 → 其后字符
+        assert_eq!(b.utf16_to_char(3), 2);
+        assert_eq!(b.utf16_to_char(4), 3);
+        assert_eq!(b.utf16_to_char(99), 4); // 越界夹紧
+        // 往返
+        for i in 0..=b.len_chars() {
+            assert_eq!(b.utf16_to_char(b.char_to_utf16(i)), i);
+        }
+    }
+
+    #[test]
+    fn eq_str_without_copy() {
+        let b = Buffer::from_text("hello 中文 world");
+        assert!(b.eq_str("hello 中文 world"));
+        assert!(!b.eq_str("hello 中文 worl"));
+        assert!(!b.eq_str("hello 中文 world!"));
+        assert!(!b.eq_str(""));
+        assert!(Buffer::new().eq_str(""));
     }
 }

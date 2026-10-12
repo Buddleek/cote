@@ -62,7 +62,6 @@ export interface OpenResult {
   tab: TabPayload | null;
   list: TabList;
   message: string;
-  switched: boolean;
 }
 
 export interface CloseResult {

@@ -227,8 +227,8 @@ fn rejoin(lines: &[&str]) -> String {
 }
 
 pub fn sort_lines(s: &str, ascending: bool, numeric: bool, case_insensitive: bool) -> String {
-    let mut lines = split_lines_keep(s);
-    let key = |l: &&str| -> (bool, f64, String) {
+    type Key = (bool, f64, String);
+    let key_of = |l: &str| -> Key {
         let c = line_content(l).trim();
         let folded = if case_insensitive {
             c.to_lowercase()
@@ -237,24 +237,24 @@ pub fn sort_lines(s: &str, ascending: bool, numeric: bool, case_insensitive: boo
         };
         if numeric {
             // 直接 parse（Rust 接受 "+3"/"-3"）；不能剥符号再解析，否则负数变正数
-            let num = c.parse::<f64>().ok();
-            match num {
-                Some(n) => (false, n, folded),
-                None => (true, 0.0, folded),
+            match c.parse::<f64>() {
+                Ok(n) => (false, n, folded),
+                Err(_) => (true, 0.0, folded),
             }
         } else {
             (false, 0.0, folded)
         }
     };
-    let cmp = |a: &&str, b: &&str| {
-        key(a)
-            .partial_cmp(&key(b))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    };
-    lines.sort_by(cmp);
+    // 预计算 key 后排序：避免比较闭包内 O(n log n) 次重复分配 key
+    let mut keyed: Vec<(Key, &str)> = split_lines_keep(s)
+        .into_iter()
+        .map(|l| (key_of(l), l))
+        .collect();
+    keyed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     if !ascending {
-        lines.reverse();
+        keyed.reverse();
     }
+    let lines: Vec<&str> = keyed.into_iter().map(|(_, l)| l).collect();
     rejoin(&lines)
 }
 
@@ -382,22 +382,27 @@ pub fn word_completions(text: &str, prefix: &str, limit: usize) -> Vec<String> {
     if prefix.is_empty() {
         return vec![];
     }
+    // 扫描阶段就按前缀过滤：集合只保留候选词，避免为全文每个词分配 String
     let mut words = std::collections::HashSet::new();
     let mut cur = String::new();
+    let mut flush = |cur: &mut String| {
+        if cur.starts_with(prefix) && cur != prefix {
+            words.insert(std::mem::take(cur));
+        } else {
+            cur.clear();
+        }
+    };
     for c in text.chars() {
         if is_word_char(c) {
             cur.push(c);
         } else if !cur.is_empty() {
-            words.insert(std::mem::take(&mut cur));
+            flush(&mut cur);
         }
     }
     if !cur.is_empty() {
-        words.insert(cur);
+        flush(&mut cur);
     }
-    let mut v: Vec<String> = words
-        .into_iter()
-        .filter(|w| w.starts_with(prefix) && w != prefix)
-        .collect();
+    let mut v: Vec<String> = words.into_iter().collect();
     v.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
     v.truncate(limit);
     v
@@ -435,21 +440,29 @@ pub fn stats(s: &str) -> TextStats {
     if !s.is_empty() {
         st.lines = 1 + newline_count(s);
     }
+    st.words = count_words(s.chars());
+    st
+}
+
+/// 词数核心：连续字母数字/下划线计 1，中日韩字符逐字计 1。
+/// 独立出来供零物化调用方（Document::stats）流式迭代字符使用。
+pub fn count_words(chars: impl Iterator<Item = char>) -> usize {
+    let mut words = 0usize;
     let mut in_word = false;
-    for c in s.chars() {
+    for c in chars {
         if is_cjk_word_char(c) {
-            st.words += 1;
+            words += 1;
             in_word = false;
         } else if c.is_alphanumeric() || c == '_' {
             if !in_word {
-                st.words += 1;
+                words += 1;
                 in_word = true;
             }
         } else {
             in_word = false;
         }
     }
-    st
+    words
 }
 
 fn newline_count(s: &str) -> usize {
@@ -463,6 +476,61 @@ fn newline_count(s: &str) -> usize {
         }
     }
     n
+}
+
+/// 字节偏移所在行号（0 基，`split_lines_keep` 语义：\n、\r\n、孤立 \r 均为行界）。
+/// 行级变换（删除/复制/移动当前行）用它把光标位置换算成行索引，
+/// 与 CodeMirror 的按 \n 分行解耦——CR 换行文件中两者行号不一致。
+/// 注意不能在 `text[..byte]` 前缀上数：切片会把结尾恰为 \r 的 \r\n 误判，
+/// 必须扫描全文、只在换行符**起点**早于 `byte` 时计数。
+pub fn line_index_at_byte(text: &str, byte: usize) -> usize {
+    let bytes = text.as_bytes();
+    let end = byte.min(bytes.len());
+    let mut n = 0;
+    let mut i = 0;
+    while i < end {
+        match bytes[i] {
+            b'\n' => {
+                n += 1;
+                i += 1;
+            }
+            b'\r' => {
+                // \r\n 与孤立 \r 都恰是一个行界；\r 起点早于 end 即计入
+                let next_is_nl = i + 1 < bytes.len() && bytes[i + 1] == b'\n';
+                n += 1;
+                i += if next_is_nl { 2 } else { 1 };
+            }
+            _ => i += 1,
+        }
+    }
+    n
+}
+
+/// 把字节区间扩展到完整行（含行终止符）。返回 (行首字节, 行尾字节含终止符)。
+/// 选区类行变换（排序/去重/注释等）先扩展到整行再整体处理。
+pub fn expand_to_full_lines(text: &str, start: usize, end: usize) -> (usize, usize) {
+    let len = text.len();
+    let start = start.min(len);
+    let end = end.clamp(start, len);
+    let bytes = text.as_bytes();
+    // \r/\n 是 ASCII，UTF-8 多字节序列的续字节不会误命中，按字节回扫安全
+    let mut s = start;
+    while s > 0 && !matches!(bytes[s - 1], b'\n' | b'\r') {
+        s -= 1;
+    }
+    let mut e = end;
+    while e < len && !matches!(bytes[e], b'\n' | b'\r') {
+        e += 1;
+    }
+    if e < len {
+        // 连同终止符一起纳入；\r\n 作为一个整体
+        if bytes[e] == b'\r' && e + 1 < len && bytes[e + 1] == b'\n' {
+            e += 2;
+        } else {
+            e += 1;
+        }
+    }
+    (s, e)
 }
 
 #[cfg(test)]
@@ -547,6 +615,32 @@ mod tests {
         assert_eq!(toggle_line_comment(s, "//"), "// fn a() {}\n\n// fn b() {}");
         let commented = toggle_line_comment(s, "//");
         assert_eq!(toggle_line_comment(&commented, "//"), s);
+    }
+
+    #[test]
+    fn line_index_and_full_line_expansion() {
+        // \r\n 与孤立 \r 都是行界（与 split_lines_keep 一致）
+        let s = "ab\ncd\r\nef\rgh";
+        assert_eq!(line_index_at_byte(s, 0), 0); // 'a'
+        assert_eq!(line_index_at_byte(s, 3), 1); // 'c'（\n 之后）
+        assert_eq!(line_index_at_byte(s, 7), 2); // 'e'（\r\n 之后）
+        assert_eq!(line_index_at_byte(s, 10), 3); // 'g'（孤立 \r 之后）
+        assert_eq!(line_index_at_byte(s, 999), 3); // 越界夹紧
+
+        // 选区 → 完整行（含终止符；\r\n 作为整体）
+        let (s0, e0) = expand_to_full_lines(s, 4, 5); // 选中 "d" → 整行 "cd\r\n"
+        assert_eq!(&s[s0..e0], "cd\r\n");
+        // 跨行选区扩展到两端整行
+        let (s1, e1) = expand_to_full_lines(s, 4, 11); // "d\r\nef\rg" → 三行
+        assert_eq!(&s[s1..e1], "cd\r\nef\rgh");
+        // 末行无终止符
+        let (s2, e2) = expand_to_full_lines(s, 10, 11);
+        assert_eq!(&s[s2..e2], "gh");
+        // 空文档
+        assert_eq!(expand_to_full_lines("", 0, 0), (0, 0));
+        // 光标点（start==end）扩展为所在整行
+        let (s3, e3) = expand_to_full_lines(s, 4, 4);
+        assert_eq!(&s[s3..e3], "cd\r\n");
     }
 
     #[test]

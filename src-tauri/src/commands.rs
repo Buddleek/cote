@@ -17,8 +17,8 @@ use tauri::State;
 
 use crate::state::{
     adjust_active_after_close, char_to_byte, char_to_utf16, load_into, new_tab_silent, open_path,
-    save_session, save_tab, utf16_to_char, AppInner, AppState, SaveOutcome, TabList, TabMeta,
-    TabPayload, TabState, MAX_HIGHLIGHT_BYTES,
+    save_session, save_tab, AppInner, AppState, SaveOutcome, TabList, TabMeta, TabPayload,
+    TabState, MAX_HIGHLIGHT_BYTES,
 };
 
 fn lock<'a>(state: &'a State<'_, AppState>) -> std::sync::MutexGuard<'a, AppInner> {
@@ -144,26 +144,19 @@ pub struct OpenResult {
     pub tab: Option<TabPayload>,
     pub list: TabList,
     pub message: String,
-    /// 已在别的标签页打开，前端只需切换过去
-    pub switched: bool,
 }
 
 #[tauri::command]
 pub fn open_file(state: State<'_, AppState>, path: String) -> OpenResult {
     let mut inner = lock(&state);
     let p = PathBuf::from(&path);
-    let was_open = inner
-        .tabs
-        .iter()
-        .any(|t| t.doc.path().map(|q| q == &p).unwrap_or(false));
     let (idx, message) = open_path(&mut inner, &p);
     save_session(&inner);
-    // 注意：open_path 失败路径会移除新建标签，idx 可能越界——用 get 安全取
+    // 失败路径 open_path 已移除新建标签，idx 为 None——不得按下标误取其他标签
     OpenResult {
-        tab: inner.tabs.get(idx).map(TabPayload::of),
+        tab: idx.and_then(|i| inner.tabs.get(i).map(TabPayload::of)),
         list: TabList::of(&inner),
         message,
-        switched: was_open,
     }
 }
 
@@ -203,7 +196,9 @@ pub fn close_tab(state: State<'_, AppState>, tab_id: u64, save: bool) -> CloseRe
             _ => {}
         }
     }
-    let idx = tab_idx(&inner, tab_id).unwrap();
+    let Some(idx) = tab_idx(&inner, tab_id) else {
+        return deny(None, &inner);
+    };
     inner.tabs.remove(idx);
     adjust_active_after_close(&mut inner, idx);
     save_session(&inner);
@@ -425,21 +420,21 @@ pub fn apply_edit(
         return;
     };
     // Document 的删除/插入用字符索引；逐 op 转换（文本随 op 演化）。
-    // O(n)/op：与 egui 版每帧 O(n) diff 同步同阶，编辑场景足够。
+    // UTF-16 ↔ 字符索引走 rope 原生 O(log n) 转换，不再物化全文。
     for op in ops {
-        let text = inner.tabs[idx].doc.text();
-        let from = utf16_to_char(&text, op.from);
-        let to = utf16_to_char(&text, op.to);
+        let doc = &mut inner.tabs[idx].doc;
+        let from = doc.utf16_to_char(op.from);
+        let to = doc.utf16_to_char(op.to);
         if from < to {
-            inner.tabs[idx].doc.delete_range(from, to);
+            doc.delete_range(from, to);
         }
         if !op.inserted.is_empty() {
-            inner.tabs[idx].doc.insert_text(from, &op.inserted);
+            doc.insert_text(from, &op.inserted);
         }
     }
-    let text = inner.tabs[idx].doc.text();
-    let a = utf16_to_char(&text, anchor.min(head));
-    let h = utf16_to_char(&text, anchor.max(head));
+    let doc = &inner.tabs[idx].doc;
+    let a = doc.utf16_to_char(anchor.min(head));
+    let h = doc.utf16_to_char(anchor.max(head));
     inner.tabs[idx].selection = Some((a, h));
 }
 
@@ -492,6 +487,8 @@ pub fn undo(state: State<'_, AppState>, tab_id: u64) -> Option<HistoryResult> {
     let idx = tab_idx(&inner, tab_id)?;
     let before = inner.tabs[idx].doc.text();
     let (ops, cursor_char) = inner.tabs[idx].doc.undo_with_ops()?;
+    // 撤销可能回到换行风格不同的旧文本（如 set_newline 前的状态），元数据须跟随
+    inner.tabs[idx].mixed_newline = inner.tabs[idx].doc.newline_info().mixed();
     let edits = replay_to_utf16(&before, &ops, false);
     Some(HistoryResult {
         edits,
@@ -506,6 +503,7 @@ pub fn redo(state: State<'_, AppState>, tab_id: u64) -> Option<HistoryResult> {
     let idx = tab_idx(&inner, tab_id)?;
     let before = inner.tabs[idx].doc.text();
     let (ops, cursor_char) = inner.tabs[idx].doc.redo_with_ops()?;
+    inner.tabs[idx].mixed_newline = inner.tabs[idx].doc.newline_info().mixed();
     let edits = replay_to_utf16(&before, &ops, true);
     Some(HistoryResult {
         edits,
@@ -592,16 +590,20 @@ pub fn search(
     };
     let text = inner.tabs[idx].doc.text();
     match search::find_all(&text, &query, &search_options(&opts)) {
-        Ok(ms) => SearchResult {
-            matches: ms
-                .into_iter()
-                .map(|m| SearchMatch {
-                    from: char_to_utf16(&text, m.start),
-                    to: char_to_utf16(&text, m.end),
-                })
-                .collect(),
-            error: None,
-        },
+        Ok(ms) => {
+            // 匹配按字符序递增：单遍游标换算 UTF-16，避免每匹配从头计数
+            let mut cur = crate::state::Utf16Cursor::new(&text);
+            SearchResult {
+                matches: ms
+                    .into_iter()
+                    .map(|m| SearchMatch {
+                        from: cur.char_to_u16(m.start),
+                        to: cur.char_to_u16(m.end),
+                    })
+                    .collect(),
+                error: None,
+            }
+        }
         Err(e) => SearchResult {
             matches: vec![],
             error: Some(e.to_string()),
@@ -697,12 +699,20 @@ pub struct TransformResult {
     pub list: TabList,
 }
 
+/// 文本变换（CotEditor 语义）：
+/// - 字符类变换（大小写/全半角/规范化）：有选区只作用于选区，否则全文；
+/// - 行类变换（排序/去重/反转/去尾空白/Tab 转换）：有选区作用于所选行，否则全文；
+/// - 切换行注释：有选区作用于所选行，否则当前行；
+/// - 行操作（删除/复制/移动行）：作用于光标行。
+/// `pos` 为光标（UTF-16 偏移），行号由后端按 \n/\r\n/\r 统一推导——
+/// 前端 CodeMirror 只按 \n 分行，CR 换行文件中两套行号不一致。
 #[tauri::command]
 pub fn transform(
     state: State<'_, AppState>,
     tab_id: u64,
     kind: String,
-    line: Option<usize>,
+    pos: Option<usize>,
+    sel: Option<(usize, usize)>,
 ) -> TransformResult {
     use editor_core::text::NormalForm;
     let mut inner = lock(&state);
@@ -713,54 +723,119 @@ pub fn transform(
             list: TabList::of(&inner),
         };
     };
+
+    // 选区（UTF-16 → 字符索引），空/退化选区视为无选区
+    let (sel_from, sel_to) = match sel {
+        Some((a, b)) => {
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            (Some(lo), Some(hi))
+        }
+        None => (None, None),
+    };
+    let has_sel = matches!((sel_from, sel_to), (Some(a), Some(b)) if a < b);
+
     let text = inner.tabs[idx].doc.text();
     let comment_prefix = inner.tabs[idx]
         .language
         .as_ref()
         .and_then(|l| l.line_comment.clone())
         .unwrap_or_else(|| "//".to_string());
-    let line_idx = line.unwrap_or(0);
-    let applied: Result<String, String> = match kind.as_str() {
-        "upper" => Ok(tx::to_upper(&text)),
-        "lower" => Ok(tx::to_lower(&text)),
-        "title" => Ok(tx::to_title_case(&text)),
-        "sentence" => Ok(tx::to_sentence_case(&text)),
-        "full_to_half" => Ok(tx::full_to_half(&text)),
-        "half_to_full" => Ok(tx::half_to_full(&text)),
-        "nfc" => Ok(tx::normalize(&text, NormalForm::Nfc)),
-        "nfd" => Ok(tx::normalize(&text, NormalForm::Nfd)),
-        "nfkc" => Ok(tx::normalize(&text, NormalForm::Nfkc)),
-        "nfkd" => Ok(tx::normalize(&text, NormalForm::Nfkd)),
-        "tabs_to_spaces" => Ok(tx::tabs_to_spaces(&text, 4)),
-        "spaces_to_tabs" => Ok(tx::leading_spaces_to_tabs(&text, 4)),
-        "sort_asc" => Ok(tx::sort_lines(&text, true, false, false)),
-        "sort_desc" => Ok(tx::sort_lines(&text, false, false, false)),
-        "unique_lines" => Ok(tx::unique_lines(&text)),
-        "reverse_lines" => Ok(tx::reverse_lines(&text)),
-        "trim_trailing" => Ok(tx::trim_trailing_whitespace(&text)),
-        "delete_line" => Ok(tx::delete_line(&text, line_idx)),
-        "duplicate_line" => Ok(tx::duplicate_line(&text, line_idx)),
-        "move_up" => Ok(tx::move_line(&text, line_idx, -1)),
-        "move_down" => Ok(tx::move_line(&text, line_idx, 1)),
-        "toggle_comment" => Ok(tx::toggle_line_comment(&text, &comment_prefix)),
-        _ => Err(format!("未知变换：{kind}")),
-    };
-    match applied {
-        Ok(new_text) => {
-            let t = &mut inner.tabs[idx];
-            t.doc.replace_all_text(&new_text);
-            t.mixed_newline = t.doc.newline_info().mixed();
-            TransformResult {
-                text: new_text,
-                message: None,
+
+    // 各变换的文本函数（toggle_comment 需捕获注释前缀，统一装 Box）
+    let f: Box<dyn FnOnce(&str) -> String> = match kind.as_str() {
+        "upper" => Box::new(tx::to_upper),
+        "lower" => Box::new(tx::to_lower),
+        "title" => Box::new(tx::to_title_case),
+        "sentence" => Box::new(tx::to_sentence_case),
+        "full_to_half" => Box::new(tx::full_to_half),
+        "half_to_full" => Box::new(tx::half_to_full),
+        "nfc" => Box::new(|s| tx::normalize(s, NormalForm::Nfc)),
+        "nfd" => Box::new(|s| tx::normalize(s, NormalForm::Nfd)),
+        "nfkc" => Box::new(|s| tx::normalize(s, NormalForm::Nfkc)),
+        "nfkd" => Box::new(|s| tx::normalize(s, NormalForm::Nfkd)),
+        "tabs_to_spaces" => Box::new(|s| tx::tabs_to_spaces(s, 4)),
+        "spaces_to_tabs" => Box::new(|s| tx::leading_spaces_to_tabs(s, 4)),
+        "sort_asc" => Box::new(|s| tx::sort_lines(s, true, false, false)),
+        "sort_desc" => Box::new(|s| tx::sort_lines(s, false, false, false)),
+        "unique_lines" => Box::new(tx::unique_lines),
+        "reverse_lines" => Box::new(tx::reverse_lines),
+        "trim_trailing" => Box::new(tx::trim_trailing_whitespace),
+        "toggle_comment" => {
+            let prefix = comment_prefix;
+            Box::new(move |s| tx::toggle_line_comment(s, &prefix))
+        }
+        "delete_line" | "duplicate_line" | "move_up" | "move_down" => {
+            // 行操作走下方独立路径（需行索引）
+            let line = tx::line_index_at_byte(
+                &text,
+                char_to_byte(&text, inner.tabs[idx].doc.utf16_to_char(pos.unwrap_or(0))),
+            );
+            let new_text = match kind.as_str() {
+                "delete_line" => tx::delete_line(&text, line),
+                "duplicate_line" => tx::duplicate_line(&text, line),
+                "move_up" => tx::move_line(&text, line, -1),
+                _ => tx::move_line(&text, line, 1),
+            };
+            apply_whole_doc(&mut inner, idx, new_text);
+            return transform_result(&inner, idx);
+        }
+        _ => {
+            return TransformResult {
+                text,
+                message: Some(format!("未知变换：{kind}")),
                 list: TabList::of(&inner),
             }
         }
-        Err(e) => TransformResult {
-            text,
-            message: Some(e),
-            list: TabList::of(&inner),
-        },
+    };
+
+    let doc = &mut inner.tabs[idx].doc;
+    if has_sel {
+        // 有选区：字符类直接作用于选区；行类/注释先扩展到完整行
+        let cs = doc.utf16_to_char(sel_from.unwrap());
+        let ce = doc.utf16_to_char(sel_to.unwrap());
+        let is_line_kind = !matches!(
+            kind.as_str(),
+            "upper" | "lower" | "title" | "sentence" | "full_to_half" | "half_to_full"
+                | "nfc" | "nfd" | "nfkc" | "nfkd"
+        );
+        if is_line_kind {
+            let (bs, be) = (char_to_byte(&text, cs), char_to_byte(&text, ce));
+            let (ls, le) = tx::expand_to_full_lines(&text, bs, be);
+            doc.transform_range(
+                text[..ls].chars().count(),
+                text[..le].chars().count(),
+                f,
+            );
+        } else {
+            doc.transform_range(cs, ce, f);
+        }
+    } else if kind == "toggle_comment" {
+        // 无选区的注释切换只作用当前行（CotEditor 语义）
+        let cursor = doc.utf16_to_char(pos.unwrap_or(0));
+        let bc = char_to_byte(&text, cursor);
+        let (ls, le) = tx::expand_to_full_lines(&text, bc, bc);
+        doc.transform_range(
+            text[..ls].chars().count(),
+            text[..le].chars().count(),
+            f,
+        );
+    } else {
+        apply_whole_doc(&mut inner, idx, f(&text));
+    }
+    transform_result(&inner, idx)
+}
+
+fn apply_whole_doc(inner: &mut crate::state::AppInner, idx: usize, new_text: String) {
+    let t = &mut inner.tabs[idx];
+    t.doc.replace_all_text(&new_text);
+    t.mixed_newline = t.doc.newline_info().mixed();
+}
+
+fn transform_result(inner: &crate::state::AppInner, idx: usize) -> TransformResult {
+    TransformResult {
+        text: inner.tabs[idx].doc.text(),
+        message: None,
+        list: TabList::of(inner),
     }
 }
 
@@ -961,16 +1036,17 @@ pub struct HighlightResult {
 
 fn byte_spans_to_utf16(text: &str, spans: &[Span]) -> Vec<HighlightSpan> {
     // 字节偏移 → UTF-16 偏移：建 (字节起点 → u16 起点) 有序表后二分
-    // （高亮为防抖操作，O(n) 建表可接受）
+    // （高亮为防抖操作，O(n) 建表可接受）；终点在扫描中一并得出，避免二次遍历
+    let mut total_u16 = 0usize;
     let mut entries: Vec<(usize, usize)> = text
         .char_indices()
         .scan(0usize, |u16acc, (b, c)| {
             let u16start = *u16acc;
             *u16acc += c.len_utf16();
+            total_u16 = *u16acc;
             Some((b, u16start))
         })
         .collect();
-    let total_u16 = text.chars().map(|c| c.len_utf16()).sum();
     entries.push((text.len(), total_u16));
     let byte_to_u16 = |b: usize| -> usize {
         match entries.binary_search_by_key(&b, |&(bb, _)| bb) {
@@ -1004,10 +1080,13 @@ pub fn highlight(state: State<'_, AppState>, tab_id: u64) -> HighlightResult {
             truncated: true,
         };
     }
-    let lang = inner.tabs[idx].language.clone();
-    let spans: Vec<Span> = match &mut inner.tabs[idx].ts_highlighter {
-        Some(ts) => ts.spans_for(&text),
-        None => syntax_engine::highlight(&text, lang.as_ref()),
+    // 不相交字段借用：ts_highlighter 可变、language 只读，无需克隆整个 LanguageDef
+    let spans: std::sync::Arc<Vec<Span>> = {
+        let tab = &mut inner.tabs[idx];
+        match &mut tab.ts_highlighter {
+            Some(ts) => ts.spans_for(&text),
+            None => std::sync::Arc::new(syntax_engine::highlight(&text, tab.language.as_ref())),
+        }
     };
     HighlightResult {
         spans: byte_spans_to_utf16(&text, &spans),
@@ -1073,47 +1152,85 @@ pub fn run_script(
     anchor: Option<usize>,
     head: Option<usize>,
 ) -> ScriptResult {
-    let mut inner = lock(&state);
-    let Some(idx) = tab_idx(&inner, tab_id) else {
-        return ScriptResult {
-            text: String::new(),
-            sel: None,
-            message: String::new(),
-            changed: false,
-            list: TabList::of(&inner),
+    // 阶段一（持锁）：快照脚本输入。执行期间放锁——慢/死循环脚本
+    // 不再冻结自动保存、外部修改检测与其他命令。
+    let snapshot = {
+        let inner = lock(&state);
+        let Some(idx) = tab_idx(&inner, tab_id) else {
+            return ScriptResult {
+                text: String::new(),
+                sel: None,
+                message: String::new(),
+                changed: false,
+                list: TabList::of(&inner),
+            };
         };
+        let text = inner.tabs[idx].doc.text();
+        // 选区以前端传入的实时值为准（TabState.selection 仅在编辑时更新，会过期）
+        let selection = match (anchor, head) {
+            (Some(a), Some(h)) => {
+                let (lo, hi) = if a <= h { (a, h) } else { (h, a) };
+                Some((
+                    inner.tabs[idx].doc.utf16_to_char(lo),
+                    inner.tabs[idx].doc.utf16_to_char(hi),
+                ))
+            }
+            _ => inner.tabs[idx].selection,
+        };
+        (text, selection, inner.tabs[idx].doc.revision())
     };
-    let dir = platform::session::config_dir()
+    let (text, selection, revision) = snapshot;
+
+    // 阶段二（无锁）：读取并执行脚本。
+    // 按名直读单文件（不再每次执行全目录扫描）；名字即文件名，
+    // 拒绝路径分隔符与 ".." 防路径注入。
+    let source = platform::session::config_dir()
         .map(|d| d.join("scripts"))
-        .unwrap_or_default();
-    let scripts = script_host::load_scripts(&dir);
-    let Some(s) = scripts.iter().find(|s| s.name == name) else {
+        .and_then(|dir| read_script_source(&dir, &name));
+    let Some(source) = source else {
+        let inner = lock(&state);
         return ScriptResult {
-            text: inner.tabs[idx].doc.text(),
+            text: current_text_or_empty(&inner, tab_id),
             sel: None,
             message: format!("找不到脚本 {name}"),
             changed: false,
             list: TabList::of(&inner),
         };
     };
-    let text = inner.tabs[idx].doc.text();
-    // 选区以前端传入的实时值为准（TabState.selection 仅在编辑时更新，会过期）
-    let selection = match (anchor, head) {
-        (Some(a), Some(h)) => {
-            let (lo, hi) = if a <= h { (a, h) } else { (h, a) };
-            Some((utf16_to_char(&text, lo), utf16_to_char(&text, hi)))
-        }
-        _ => inner.tabs[idx].selection,
-    };
     let api = ScriptApi {
         text: text.clone(),
         selection,
         status: None,
     };
-    match script_host::run_script(&s.source, &api) {
+    let outcome = script_host::run_script(&source, &api);
+
+    // 阶段三（持锁）：校验内容未被并发修改后写回
+    let mut inner = lock(&state);
+    let Some(idx) = tab_idx(&inner, tab_id) else {
+        return ScriptResult {
+            text: String::new(),
+            sel: None,
+            message: format!("脚本 {name} 执行期间标签页已关闭"),
+            changed: false,
+            list: TabList::of(&inner),
+        };
+    };
+    match outcome {
         Ok(out) => {
             let changed = out.text != text;
             if changed {
+                if inner.tabs[idx].doc.revision() != revision {
+                    // 执行期间文档被编辑：基于旧文本的结果直接丢弃，防止覆盖用户输入
+                    return ScriptResult {
+                        text: inner.tabs[idx].doc.text(),
+                        sel: None,
+                        message: format!(
+                            "脚本 {name} 执行期间文档已修改，其结果已被丢弃（可重新运行）"
+                        ),
+                        changed: false,
+                        list: TabList::of(&inner),
+                    };
+                }
                 let t = &mut inner.tabs[idx];
                 t.doc.replace_all_text(&out.text);
                 t.mixed_newline = t.doc.newline_info().mixed();
@@ -1130,7 +1247,7 @@ pub fn run_script(
                 sel,
                 message: out
                     .status
-                    .unwrap_or_else(|| format!("脚本 {} 执行完成", s.name)),
+                    .unwrap_or_else(|| format!("脚本 {} 执行完成", name)),
                 changed,
                 list: TabList::of(&inner),
             }
@@ -1138,11 +1255,29 @@ pub fn run_script(
         Err(e) => ScriptResult {
             text,
             sel: None,
-            message: format!("脚本 {} 出错：{e}", s.name),
+            message: format!("脚本 {name} 出错：{e}"),
             changed: false,
             list: TabList::of(&inner),
         },
     }
+}
+
+fn current_text_or_empty(inner: &crate::state::AppInner, tab_id: u64) -> String {
+    inner
+        .tabs
+        .iter()
+        .find(|t| t.id == tab_id)
+        .map(|t| t.doc.text())
+        .unwrap_or_default()
+}
+
+/// 按脚本名读取单个脚本源码。名字来自前端菜单，必须视作不可信输入：
+/// 拒绝路径分隔符 / ".."，只允许拼到 `scripts/<name>.js`。
+fn read_script_source(dir: &std::path::Path, name: &str) -> Option<String> {
+    if name.is_empty() || name.contains(['/', '\\']) || name.contains("..") {
+        return None;
+    }
+    std::fs::read_to_string(dir.join(format!("{name}.js"))).ok()
 }
 
 // ---------- 外观 ----------

@@ -235,9 +235,9 @@ pub fn decode_auto(bytes: &[u8]) -> DecodeResult {
         };
     }
 
-    if std::str::from_utf8(bytes).is_ok() {
+    if let Ok(s) = std::str::from_utf8(bytes) {
         return DecodeResult {
-            text: String::from_utf8_lossy(bytes).into_owned(),
+            text: s.to_string(),
             encoding: "UTF-8".to_string(),
             had_bom: false,
             had_errors: false,

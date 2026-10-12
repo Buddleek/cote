@@ -86,78 +86,58 @@ fn boundary_ok(text: &str, byte_start: usize, byte_end: usize) -> bool {
     (!first || !before) && (!last || !after)
 }
 
-/// 字节偏移 → 字符偏移表（单次遍历 + 二分查找，避免每匹配 O(n)）。
-struct ByteCharTable {
-    entries: Vec<(usize, usize)>, // (byte_idx, char_idx)，按 byte 升序
+/// 字节偏移 → 字符偏移换算游标：利用匹配按字节序单调递增的性质，
+/// 只向前推进、合计单遍扫描，免去为每个匹配重复计数或建 O(n) 全表。
+struct CharCursor<'a> {
+    text: &'a str,
+    byte_pos: usize,
+    char_pos: usize,
 }
 
-impl ByteCharTable {
-    fn new(text: &str) -> Self {
+impl<'a> CharCursor<'a> {
+    fn new(text: &'a str) -> Self {
         Self {
-            entries: text
-                .char_indices()
-                .enumerate()
-                .map(|(ci, (bi, _))| (bi, ci))
-                .collect(),
+            text,
+            byte_pos: 0,
+            char_pos: 0,
         }
     }
 
-    fn lookup(&self, byte: usize) -> usize {
-        let i = self.entries.partition_point(|&(b, _)| b <= byte);
-        if i == 0 {
-            0
-        } else {
-            self.entries[i - 1].1
-        }
+    /// 返回 `byte_offset` 处的字符索引（只接受不小于上次位置的单调前进）。
+    fn char_at(&mut self, byte_offset: usize) -> usize {
+        self.char_pos += self.text[self.byte_pos..byte_offset].chars().count();
+        self.byte_pos = byte_offset;
+        self.char_pos
     }
+}
+
+fn to_char_match(text: &str, cursor: &mut CharCursor, m: &fancy_regex::Match<'_>) -> Match {
+    let start = cursor.char_at(m.start());
+    let end = start + text[m.start()..m.end()].chars().count();
+    Match { start, end }
 }
 
 /// 全部匹配（字符索引）。
 pub fn find_all(text: &str, query: &str, opts: &SearchOptions) -> Result<Vec<Match>, SearchError> {
-    Ok(find_matches(text, query, opts)?
-        .into_iter()
-        .map(|m| Match {
-            start: m.char_start,
-            end: m.char_end,
-        })
-        .collect())
-}
-
-struct ByteMatch {
-    byte_start: usize,
-    byte_end: usize,
-    char_start: usize,
-    char_end: usize,
-}
-
-fn find_matches(
-    text: &str,
-    query: &str,
-    opts: &SearchOptions,
-) -> Result<Vec<ByteMatch>, SearchError> {
     let re = build_regex(query, opts)?;
-    let table = ByteCharTable::new(text);
+    let mut cursor = CharCursor::new(text);
     let mut out = vec![];
     for m in re.find_iter(text) {
         let m = m.map_err(|e| SearchError::InvalidRegex(e.to_string()))?;
-        // 跳过空匹配：编辑器场景下无意义，且会使下方 end-1 下标回退崩溃
+        // 跳过空匹配：编辑器场景下无意义
         if m.end() == m.start() {
             continue;
         }
         if opts.whole_word && !boundary_ok(text, m.start(), m.end()) {
             continue;
         }
-        out.push(ByteMatch {
-            byte_start: m.start(),
-            byte_end: m.end(),
-            char_start: table.lookup(m.start()),
-            char_end: table.lookup(m.end() - 1) + 1,
-        });
+        out.push(to_char_match(text, &mut cursor, &m));
     }
     Ok(out)
 }
 
 /// 从 `from`（字符索引）开始查找第一个匹配；找不到时按 `wrap` 决定是否回绕到文首。
+/// 找到即返回，不扫描文档剩余部分。
 pub fn find_next(
     text: &str,
     from: usize,
@@ -165,12 +145,26 @@ pub fn find_next(
     opts: &SearchOptions,
     wrap: bool,
 ) -> Result<Option<Match>, SearchError> {
-    let all = find_all(text, query, opts)?;
-    Ok(match all.iter().find(|m| m.start >= from) {
-        Some(m) => Some(*m),
-        None if wrap => all.first().copied(),
-        None => None,
-    })
+    let re = build_regex(query, opts)?;
+    let mut cursor = CharCursor::new(text);
+    let mut first: Option<Match> = None;
+    for m in re.find_iter(text) {
+        let m = m.map_err(|e| SearchError::InvalidRegex(e.to_string()))?;
+        if m.end() == m.start() {
+            continue;
+        }
+        if opts.whole_word && !boundary_ok(text, m.start(), m.end()) {
+            continue;
+        }
+        let cm = to_char_match(text, &mut cursor, &m);
+        if first.is_none() {
+            first = Some(cm);
+        }
+        if cm.start >= from {
+            return Ok(Some(cm));
+        }
+    }
+    Ok(if wrap { first } else { None })
 }
 
 /// 全部替换。返回（新文本, 替换次数）。
@@ -218,16 +212,27 @@ pub fn replace_all(
         return Ok((out, count));
     }
 
-    let matches = find_matches(text, query, opts)?;
+    let re = build_regex(query, opts)?;
+    let mut ranges: Vec<(usize, usize)> = vec![];
+    for m in re.find_iter(text) {
+        let m = m.map_err(|e| SearchError::InvalidRegex(e.to_string()))?;
+        if m.end() == m.start() {
+            continue;
+        }
+        if opts.whole_word && !boundary_ok(text, m.start(), m.end()) {
+            continue;
+        }
+        ranges.push((m.start(), m.end()));
+    }
     let mut out = String::with_capacity(text.len());
     let mut last = 0usize;
-    for m in &matches {
-        out.push_str(&text[last..m.byte_start]);
+    for (byte_start, byte_end) in &ranges {
+        out.push_str(&text[last..*byte_start]);
         out.push_str(replacement);
-        last = m.byte_end;
+        last = *byte_end;
     }
     out.push_str(&text[last..]);
-    Ok((out, matches.len()))
+    Ok((out, ranges.len()))
 }
 
 #[cfg(test)]

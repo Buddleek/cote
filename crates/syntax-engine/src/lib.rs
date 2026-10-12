@@ -348,21 +348,38 @@ pub struct OutlineItem {
 /// 单个大纲标签上限（过长截断）。
 const OUTLINE_LABEL_MAX: usize = 60;
 
+/// 已编译大纲正则的全局缓存（模式字符串 → 编译结果）。
+/// 编译是纯函数：相同模式必得相同正则，内置与用户语法共用。
+/// outline 是编辑后防抖高频调用，缓存把每次数十 µs–ms 的编译降为一次哈希查找。
+fn compiled_outline_rules(def: &LanguageDef) -> Vec<(&str, std::sync::Arc<regex::Regex>)> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, Arc<regex::Regex>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guarded = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    def.outline
+        .iter()
+        .filter_map(|r| {
+            let re = match guarded.get(&r.regex) {
+                Some(re) => re.clone(),
+                None => {
+                    let compiled = Arc::new(regex::Regex::new(&r.regex).ok()?);
+                    guarded.insert(r.regex.clone(), compiled.clone());
+                    compiled
+                }
+            };
+            Some((r.kind.as_str(), re))
+        })
+        .collect()
+}
+
 /// 按语言的大纲规则逐行提取条目。无语言或无规则时返回空。
 pub fn outline(text: &str, lang: Option<&LanguageDef>) -> Vec<OutlineItem> {
     let Some(def) = lang else { return vec![] };
     if def.outline.is_empty() {
         return vec![];
     }
-    let compiled: Vec<(&str, regex::Regex)> = def
-        .outline
-        .iter()
-        .filter_map(|r| {
-            regex::Regex::new(&r.regex)
-                .ok()
-                .map(|re| (r.kind.as_str(), re))
-        })
-        .collect();
+    let compiled = compiled_outline_rules(def);
     if compiled.is_empty() {
         return vec![];
     }
@@ -414,6 +431,11 @@ pub fn highlight(text: &str, def: Option<&LanguageDef>) -> Vec<Span> {
     let mut tokens: Vec<Span> = vec![];
     let bytes = text.as_bytes();
     let mut i = 0usize;
+
+    // 精确关键词走有序表二分（每 token O(log K)，替代 O(K) 线性扫描）；
+    // 大小写不敏感模式（SQL）保留 eq_ignore_ascii_case 线性比较（首字节即失配，快）
+    let mut sorted_kws: Vec<&str> = def.keywords.iter().map(|s| s.as_str()).collect();
+    sorted_kws.sort_unstable();
 
     while i < text.len() {
         // YAML：行首的 `---`/`...` 文档标记、`- ` 列表标记、`key:` 键
@@ -564,7 +586,7 @@ pub fn highlight(text: &str, def: Option<&LanguageDef>) -> Vec<Span> {
             let is_kw = if def.ci_keywords {
                 def.keywords.iter().any(|k| k.eq_ignore_ascii_case(word))
             } else {
-                def.keywords.iter().any(|k| k == word)
+                sorted_kws.binary_search(&word).is_ok()
             };
             let kind = if is_kw {
                 TokenKind::Keyword

@@ -12,6 +12,7 @@
 //! （≤1MB 一次解析约 1–30ms，仅发生在编辑帧），布局层由 UI 的 Arc 缓存兜底。
 
 use crate::{LanguageDef, Span, TokenKind};
+use std::sync::Arc;
 use tree_sitter_highlight::{HighlightConfiguration, Highlighter};
 
 /// 支持语法树高亮的内置语言。
@@ -121,7 +122,7 @@ pub struct TsHighlighter {
     config: HighlightConfiguration,
     kind_map: Vec<TokenKind>,
     last_text: String,
-    last_spans: Vec<Span>,
+    last_spans: Arc<Vec<Span>>,
 }
 
 impl TsHighlighter {
@@ -202,16 +203,17 @@ impl TsHighlighter {
             config,
             kind_map,
             last_text: String::new(),
-            last_spans: vec![],
+            last_spans: Arc::new(vec![]),
         })
     }
 
-    /// 返回文本的高亮 spans（文本未变时命中缓存）。
-    pub fn spans_for(&mut self, text: &str) -> Vec<Span> {
+    /// 返回文本的高亮 spans（文本未变时命中缓存，仅克隆 Arc 句柄，
+    /// 不再复制整个 spans 列表）。
+    pub fn spans_for(&mut self, text: &str) -> Arc<Vec<Span>> {
         if text == self.last_text {
             return self.last_spans.clone();
         }
-        let spans = self.highlight_internal(text);
+        let spans = Arc::new(self.highlight_internal(text));
         self.last_text = text.to_string();
         self.last_spans = spans.clone();
         spans

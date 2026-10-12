@@ -78,8 +78,15 @@ export const api = {
   gotoLine: (tabId: number, line: number) =>
     ordered<GotoResult | null>("goto_line", { tabId, line }),
 
-  transform: (tabId: number, kind: string, line?: number) =>
-    ordered<TransformResult>("transform", { tabId, kind, line: line ?? null }),
+  /** pos = 光标 UTF-16 偏移（行操作/当前行注释的锚点）；
+   *  sel = 非空选区 [from, to]（选区变换；null 表示无选区）。 */
+  transform: (
+    tabId: number,
+    kind: string,
+    pos: number | null,
+    sel: [number, number] | null,
+  ) =>
+    ordered<TransformResult>("transform", { tabId, kind, pos, sel }),
 
   setEncoding: (tabId: number, enc: string) =>
     ordered<EncodingResult>("set_encoding", { tabId, enc }),

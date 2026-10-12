@@ -112,10 +112,11 @@ fn spawn_timers(app: tauri::AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(EXTERNAL_CHECK_SECS));
         let state = app_for_check.state::<AppState>();
-        let mut inner = match state.0.lock() {
-            Ok(g) => g,
-            Err(_) => continue,
-        };
+        // 中毒恢复与命令层 lock() 一致：某命令 panic 后自动保存/外部检测不得静默失效
+        let mut inner = state
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut changes = vec![];
         for i in 0..inner.tabs.len() {
             if let Some((tab_id, kind)) = check_external_changed(&mut inner, i) {
@@ -134,10 +135,10 @@ fn spawn_timers(app: tauri::AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(AUTO_SAVE_SECS));
         let state = app.state::<AppState>();
-        let mut inner = match state.0.lock() {
-            Ok(g) => g,
-            Err(_) => continue,
-        };
+        let mut inner = state
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         autosave_all(&mut inner);
     });
 }

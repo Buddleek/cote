@@ -580,11 +580,19 @@ export function App() {
 
   // ---------- 变换 ----------
 
-  async function doTransform(kind: string, line?: number) {
+  /** 文本变换（CotEditor 语义）：有选区只作用于选区/所选行，否则全文；
+   *  行操作与"当前行注释"以光标为锚。行号由后端按 \n/\r\n/\r 统一推导。 */
+  async function doTransform(kind: string) {
     const tabId = activeIdRef.current;
     const view = views.current.get(tabId);
-    const cur = view?.state.selection.main.head;
-    const r = await api.transform(tabId, kind, line);
+    const sel = view?.state.selection.main;
+    const cur = sel?.head;
+    const r = await api.transform(
+      tabId,
+      kind,
+      cur ?? null,
+      sel && !sel.empty ? [sel.from, sel.to] : null,
+    );
     if (r.message) {
       setStatus(r.message);
       return;
@@ -592,10 +600,6 @@ export function App() {
     if (view) replaceWholeDoc(view, r.text, cur);
     applyList(r.list);
     afterDocReplaced(tabId);
-  }
-
-  function transformLine(kind: string) {
-    doTransform(kind, cursorLineRef.current - 1);
   }
 
   // ---------- 编码 / 换行 / 语言 ----------
@@ -885,10 +889,10 @@ export function App() {
           },
         },
         { sep: true },
-        { label: "删除当前行", action: () => void transformLine("delete_line") },
-        { label: "复制当前行", action: () => void transformLine("duplicate_line") },
-        { label: "当前行上移", action: () => void transformLine("move_up") },
-        { label: "当前行下移", action: () => void transformLine("move_down") },
+        { label: "删除当前行", action: () => void doTransform("delete_line") },
+        { label: "复制当前行", action: () => void doTransform("duplicate_line") },
+        { label: "当前行上移", action: () => void doTransform("move_up") },
+        { label: "当前行下移", action: () => void doTransform("move_down") },
         { label: "切换行注释", action: () => void doTransform("toggle_comment") },
       ],
     },

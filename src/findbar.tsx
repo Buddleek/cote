@@ -86,7 +86,7 @@ export function FindBar({
           正则
         </label>
         <span class="count">
-          {error ? "正则错误" : count > 0 ? `${current + 1}/${count}` : count > 0 ? "" : query ? "无匹配" : ""}
+          {error ? "正则错误" : count > 0 ? `${current + 1}/${count}` : query ? "无匹配" : ""}
         </span>
         <span class="spacer" />
         <button onClick={onNext} title="下一处 (Enter)">下一处</button>

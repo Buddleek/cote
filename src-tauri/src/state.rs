@@ -38,6 +38,9 @@ pub struct TabState {
     saved_text: String,
     saved_encoding: String,
     saved_bom: bool,
+    /// mark_saved 时的内容修改计数与字符长度：is_dirty 的 O(1) 快速路径
+    saved_revision: u64,
+    saved_len_chars: usize,
     pub language: Option<LanguageDef>,
     pub auto_language: bool,
     pub ts_highlighter: Option<TsHighlighter>,
@@ -61,6 +64,8 @@ impl TabState {
             saved_text: String::new(),
             saved_encoding: "UTF-8".to_string(),
             saved_bom: false,
+            saved_revision: 0,
+            saved_len_chars: 0,
             language: None,
             auto_language: true,
             ts_highlighter: None,
@@ -73,9 +78,19 @@ impl TabState {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.doc.text() != self.saved_text
-            || self.doc.encoding_name() != self.saved_encoding
-            || self.doc.had_bom() != self.saved_bom
+        if self.doc.encoding_name() != self.saved_encoding || self.doc.had_bom() != self.saved_bom
+        {
+            return true;
+        }
+        // 快速路径：内容零修改 → 干净；长度不同 → 脏。都免去全文比较。
+        // 撤销回已保存状态时 revision 不同但长度相同，落入零拷贝全文比较。
+        if self.doc.revision() == self.saved_revision {
+            return false;
+        }
+        if self.doc.len_chars() != self.saved_len_chars {
+            return true;
+        }
+        !self.doc.content_eq(&self.saved_text)
     }
 
     /// 把当前内容/元数据记为「已保存」状态（打开与保存成功后调用）。
@@ -83,6 +98,8 @@ impl TabState {
         self.saved_text = self.doc.text();
         self.saved_encoding = self.doc.encoding_name().to_string();
         self.saved_bom = self.doc.had_bom();
+        self.saved_revision = self.doc.revision();
+        self.saved_len_chars = self.doc.len_chars();
         self.doc.set_dirty(false);
     }
 
@@ -210,24 +227,40 @@ pub fn char_to_utf16(text: &str, char_idx: usize) -> usize {
     text.chars().take(char_idx).map(|c| c.len_utf16()).sum()
 }
 
-/// UTF-16 偏移 → 字符索引（越界夹紧到文本末尾）。
-pub fn utf16_to_char(text: &str, u16_idx: usize) -> usize {
-    let mut acc = 0usize;
-    for (i, c) in text.chars().enumerate() {
-        if acc >= u16_idx {
-            return i;
-        }
-        acc += c.len_utf16();
-    }
-    text.chars().count()
-}
-
 /// 字符索引 → 字节偏移。
 pub fn char_to_byte(text: &str, char_idx: usize) -> usize {
     text.char_indices()
         .nth(char_idx)
         .map(|(b, _)| b)
         .unwrap_or(text.len())
+}
+
+/// 单遍字符 → UTF-16 换算游标：偏移按升序查询时合计只扫一遍文本，
+/// 免去每匹配从头计数（大文档多匹配场景 O(m·n) → O(n)）。
+pub struct Utf16Cursor<'a> {
+    chars: std::str::Chars<'a>,
+    char_pos: usize,
+    u16_pos: usize,
+}
+
+impl<'a> Utf16Cursor<'a> {
+    pub fn new(text: &'a str) -> Self {
+        Self {
+            chars: text.chars(),
+            char_pos: 0,
+            u16_pos: 0,
+        }
+    }
+
+    /// 返回 `char_idx` 处的 UTF-16 偏移（只接受不小于上次位置的单调前进）。
+    pub fn char_to_u16(&mut self, char_idx: usize) -> usize {
+        while self.char_pos < char_idx {
+            let c = self.chars.next().expect("调用方保证 char_idx 不越界");
+            self.u16_pos += c.len_utf16();
+            self.char_pos += 1;
+        }
+        self.u16_pos
+    }
 }
 
 // ---------- 文件与标签操作（命令层与启动逻辑共用） ----------
@@ -265,12 +298,13 @@ pub fn load_into(
 
 /// 打开路径的核心语义（对照 egui 版 open_path）：
 /// 已打开 → 切换；唯一标签是干净空白未命名页 → 复用；否则新建。
-/// 返回 (标签下标, 状态消息)。
-pub fn open_path(inner: &mut AppInner, path: &Path) -> (usize, String) {
+/// 返回 (成功打开/切换到的标签下标, 状态消息)；打开失败时下标为 None
+/// （新建标签已被移除，调用方不得再按下标取标签）。
+pub fn open_path(inner: &mut AppInner, path: &Path) -> (Option<usize>, String) {
     for (i, t) in inner.tabs.iter().enumerate() {
         if t.doc.path().map(|p| p == path).unwrap_or(false) {
             inner.active = i;
-            return (i, "该文件已在标签页中打开".to_string());
+            return (Some(i), "该文件已在标签页中打开".to_string());
         }
     }
     if inner.tabs.len() == 1 {
@@ -285,7 +319,7 @@ pub fn open_path(inner: &mut AppInner, path: &Path) -> (usize, String) {
                     let t = &inner.tabs[0];
                     let lines = t.doc.line_count();
                     return (
-                        0,
+                        Some(0),
                         format!(
                             "已打开 {}（{}，{} 行）",
                             t.display_name(),
@@ -294,7 +328,7 @@ pub fn open_path(inner: &mut AppInner, path: &Path) -> (usize, String) {
                         ),
                     );
                 }
-                Err(e) => return (0, format!("打开失败：{e}")),
+                Err(e) => return (None, format!("打开失败：{e}")),
             }
         }
     }
@@ -305,7 +339,7 @@ pub fn open_path(inner: &mut AppInner, path: &Path) -> (usize, String) {
             let t = &inner.tabs[idx];
             let lines = t.doc.line_count();
             (
-                idx,
+                Some(idx),
                 format!(
                     "已打开 {}（{}，{} 行）",
                     t.display_name(),
@@ -317,7 +351,7 @@ pub fn open_path(inner: &mut AppInner, path: &Path) -> (usize, String) {
         Err(e) => {
             inner.tabs.remove(idx);
             inner.active = inner.active.min(inner.tabs.len().saturating_sub(1));
-            (idx, format!("打开失败：{e}"))
+            (None, format!("打开失败：{e}"))
         }
     }
 }

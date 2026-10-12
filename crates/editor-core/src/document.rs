@@ -30,10 +30,10 @@ enum OpenGroup {
         removed: String,
         cursor_before: usize,
     },
-    /// 显式分组
+    /// 显式分组（begin_group/end_group 之间的编辑整组撤销；
+    /// 组的光标取首条编辑的 cursor_before）
     Explicit {
         edits: Vec<Edit>,
-        cursor_before: usize,
     },
 }
 
@@ -45,6 +45,9 @@ pub struct Document {
     had_bom: bool,
     newline: LineEnding,
     dirty: bool,
+    /// 内容修改次数（insert/delete/替换/undo/redo 都会递增）。
+    /// 供上层 dirty 快速路径使用：与已保存 revision 相等可免全文比较。
+    revision: u64,
     undo_stack: Vec<EditGroup>,
     redo_stack: Vec<EditGroup>,
     open: OpenGroup,
@@ -65,6 +68,7 @@ impl Document {
             had_bom: false,
             newline: LineEnding::platform_default(),
             dirty: false,
+            revision: 0,
             undo_stack: vec![],
             redo_stack: vec![],
             open: OpenGroup::Idle,
@@ -101,6 +105,7 @@ impl Document {
         self.newline = newline::analyze(text)
             .dominant()
             .unwrap_or_else(LineEnding::platform_default);
+        self.revision = self.revision.wrapping_add(1);
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.open = OpenGroup::Idle;
@@ -115,6 +120,26 @@ impl Document {
 
     pub fn len_chars(&self) -> usize {
         self.buffer.len_chars()
+    }
+
+    /// 内容修改计数（每次实际修改 +1）。
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// 字符索引 → UTF-16 偏移（O(log n)，前端 CodeMirror 坐标系）。
+    pub fn char_to_utf16(&self, idx: usize) -> usize {
+        self.buffer.char_to_utf16(idx)
+    }
+
+    /// UTF-16 偏移 → 字符索引（越界夹紧到文本末尾）。
+    pub fn utf16_to_char(&self, idx: usize) -> usize {
+        self.buffer.utf16_to_char(idx)
+    }
+
+    /// 零拷贝内容比较。
+    pub fn content_eq(&self, other: &str) -> bool {
+        self.buffer.eq_str(other)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -167,7 +192,18 @@ impl Document {
     }
 
     pub fn stats(&self) -> TextStats {
-        crate::text::stats(&self.buffer.text())
+        // 零物化：字符/字节/行数取自 rope 的 O(1) 元数据，词数单遍流式扫描
+        let lines = if self.buffer.is_empty() {
+            0
+        } else {
+            self.buffer.len_lines()
+        };
+        TextStats {
+            chars: self.buffer.len_chars(),
+            bytes: self.buffer.len_bytes(),
+            lines,
+            words: crate::text::count_words(self.buffer.chars()),
+        }
     }
 
     pub fn line_col(&self, char_idx: usize) -> (usize, usize) {
@@ -219,6 +255,7 @@ impl Document {
             }
         }
         self.buffer.insert(pos, s);
+        self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
     }
 
@@ -259,6 +296,7 @@ impl Document {
             }
         }
         self.buffer.remove(start, end);
+        self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
     }
 
@@ -266,10 +304,7 @@ impl Document {
     pub fn begin_group(&mut self) {
         self.finalize();
         self.redo_stack.clear();
-        self.open = OpenGroup::Explicit {
-            edits: vec![],
-            cursor_before: 0,
-        };
+        self.open = OpenGroup::Explicit { edits: vec![] };
     }
 
     /// 显式撤销分组结束。
@@ -280,10 +315,11 @@ impl Document {
     /// 整体替换文本（换行转换、外部内容替换等）。作为一条可撤销编辑。
     pub fn replace_all_text(&mut self, new_text: &str) {
         self.finalize();
-        let old = self.buffer.text();
-        if old == new_text {
+        // 未变化时零拷贝短路（set_newline 同风格转换等场景 O(n) 扫描即可）
+        if self.buffer.eq_str(new_text) {
             return;
         }
+        let old = self.buffer.text();
         let edit = Edit {
             start: 0,
             removed: old,
@@ -292,7 +328,37 @@ impl Document {
             cursor_after: new_text.chars().count(),
         };
         self.buffer = Buffer::from_text(new_text);
+        self.revision = self.revision.wrapping_add(1);
         self.push_group(EditGroup::One(edit));
+        self.dirty = true;
+    }
+
+    /// 变换区间文本并作为**单条**撤销编辑写回（选区类变换用）。
+    /// `from`/`to` 为字符索引（越界夹紧）；函数作用于区间内容，返回替换文本。
+    pub fn transform_range(&mut self, from: usize, to: usize, f: impl FnOnce(&str) -> String) {
+        self.finalize();
+        let to = to.min(self.buffer.len_chars());
+        let from = from.min(to);
+        if from == to {
+            return;
+        }
+        let removed = self.buffer.slice(from, to);
+        let inserted = f(&removed);
+        if inserted == removed {
+            return;
+        }
+        self.buffer.remove(from, to);
+        if !inserted.is_empty() {
+            self.buffer.insert(from, &inserted);
+        }
+        self.revision = self.revision.wrapping_add(1);
+        self.push_group(EditGroup::One(Edit {
+            start: from,
+            cursor_before: from,
+            cursor_after: from + inserted.chars().count(),
+            removed,
+            inserted,
+        }));
         self.dirty = true;
     }
 
@@ -367,6 +433,7 @@ impl Document {
         if !put.is_empty() {
             self.buffer.insert(e.start, put);
         }
+        self.revision = self.revision.wrapping_add(1);
     }
 
     fn push_group(&mut self, g: EditGroup) {
@@ -411,12 +478,8 @@ impl Document {
                     }));
                 }
             }
-            OpenGroup::Explicit {
-                edits,
-                cursor_before,
-            } => {
+            OpenGroup::Explicit { edits } => {
                 if !edits.is_empty() {
-                    let _ = cursor_before;
                     self.push_group(EditGroup::Many(edits));
                 }
             }
@@ -613,6 +676,28 @@ mod tests {
         assert_eq!(d.line_col(3), (2, 1));
         assert_eq!(d.line_col(4), (2, 2));
         assert_eq!(d.line_col(8), (3, 3)); // 文本末尾 = 第 3 行第 3 列
+    }
+
+    #[test]
+    fn transform_range_is_single_undo() {
+        // 选区类变换：单条撤销编辑，撤销后恢复原文与选区起点
+        let mut d = doc("hello WORLD");
+        d.transform_range(6, 11, |s| s.to_lowercase());
+        assert_eq!(d.text(), "hello world");
+        assert_eq!(d.undo_depth(), 1);
+        assert_eq!(d.undo(), Some(6));
+        assert_eq!(d.text(), "hello WORLD");
+        // 未变化的变换不产生编辑
+        let mut d = doc("abc");
+        d.transform_range(0, 3, |s| s.to_string());
+        assert_eq!(d.undo_depth(), 0);
+        // 越界与空区间安全
+        let mut d = doc("abc");
+        d.transform_range(2, 99, |s| format!("[{s}]"));
+        assert_eq!(d.text(), "ab[c]");
+        let mut d = doc("abc");
+        d.transform_range(1, 1, |s| s.to_string());
+        assert_eq!(d.text(), "abc");
     }
 
     #[test]
